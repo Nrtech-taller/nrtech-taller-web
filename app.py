@@ -1,13 +1,55 @@
 from flask import Flask, request, redirect
-import sqlite3
+import os
+import psycopg2
+from psycopg2.extras import RealDictCursor
 
-DB = "taller.db"
 app = Flask(__name__)
 
+DATABASE_URL = os.environ.get("DATABASE_URL")
+
+
 def db():
-    con = sqlite3.connect(DB)
-    con.row_factory = sqlite3.Row
-    return con
+    # Render Postgres requiere ssl
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+
+def init_db():
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS clientes (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT,
+        telefono TEXT,
+        email TEXT UNIQUE
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS ordenes (
+        id SERIAL PRIMARY KEY,
+        numero_orden TEXT UNIQUE,
+        cliente_id INTEGER REFERENCES clientes(id),
+        tipo_equipo TEXT,
+        marca TEXT,
+        modelo TEXT,
+        numero_serie TEXT,
+        imei TEXT,
+        estado_general TEXT,
+        falla_cliente TEXT,
+        diagnostico_tecnico TEXT,
+        fecha_ingreso DATE,
+        estado TEXT,
+        presupuesto NUMERIC DEFAULT 0,
+        observaciones TEXT
+    );
+    """)
+    con.commit()
+    con.close()
+
+
+# crear tablas al iniciar
+init_db()
+
 
 @app.get("/")
 def home():
@@ -20,7 +62,8 @@ def home():
     </ul>
     """
 
-@app.route("/crear", methods=["GET","POST"])
+
+@app.route("/crear", methods=["GET", "POST"])
 def crear():
     if request.method == "GET":
         return """
@@ -41,44 +84,54 @@ def crear():
         <p><a href="/">Volver</a></p>
         """
 
-    nombre = request.form.get("nombre","").strip()
-    telefono = request.form.get("telefono","").strip()
-    email = request.form.get("email","").strip()
-    tipo = request.form.get("tipo","").strip()
-    marca = request.form.get("marca","").strip()
-    modelo = request.form.get("modelo","").strip()
-    numero_serie = request.form.get("numero_serie","").strip()
-    imei = request.form.get("imei","").strip()
-    estado_general = request.form.get("estado_general","").strip()
-    falla_cliente = request.form.get("falla_cliente","").strip()
+    nombre = request.form.get("nombre", "").strip()
+    telefono = request.form.get("telefono", "").strip()
+    email = request.form.get("email", "").strip()
+    tipo = request.form.get("tipo", "").strip()
+    marca = request.form.get("marca", "").strip()
+    modelo = request.form.get("modelo", "").strip()
+    numero_serie = request.form.get("numero_serie", "").strip()
+    imei = request.form.get("imei", "").strip()
+    estado_general = request.form.get("estado_general", "").strip()
+    falla_cliente = request.form.get("falla_cliente", "").strip()
 
     con = db()
-    cur = con.cursor()
+    cur = con.cursor(cursor_factory=RealDictCursor)
 
     # cliente
-    cur.execute("SELECT id FROM clientes WHERE email=?", (email,))
+    cur.execute("SELECT id FROM clientes WHERE email=%s", (email,))
     row = cur.fetchone()
+
     if row:
         cliente_id = row["id"]
+        # opcional: actualizar nombre/teléfono si cambian
+        cur.execute(
+            "UPDATE clientes SET nombre=%s, telefono=%s WHERE id=%s",
+            (nombre, telefono, cliente_id)
+        )
     else:
-        cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(?,?,?)", (nombre, telefono, email))
-        cliente_id = cur.lastrowid
+        cur.execute(
+            "INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",
+            (nombre, telefono, email)
+        )
+        cliente_id = cur.fetchone()["id"]
 
-    # orden
+    # orden (INSERT ... RETURNING id)
     cur.execute("""
       INSERT INTO ordenes(
         numero_orden, cliente_id, tipo_equipo, marca, modelo, numero_serie, imei,
         estado_general, falla_cliente, diagnostico_tecnico, fecha_ingreso, estado, presupuesto, observaciones
-      ) VALUES(?,?,?,?,?,?,?,?,?,?,date('now'),?,?,?)
+      ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_DATE,%s,%s,%s)
+      RETURNING id
     """, ("", cliente_id, tipo, marca, modelo, numero_serie, imei,
           estado_general, falla_cliente, "", "Recibido en taller", 0.0, ""))
 
-    oid = cur.lastrowid
-    # numero profesional
-    cur.execute("SELECT strftime('%Y','now') as anio")
-    anio = cur.fetchone()["anio"]
+    oid = cur.fetchone()["id"]
+    anio = str(os.environ.get("ANIO_OVERRIDE") or "")  # no usado, por si querés
+    anio = str(__import__("datetime").datetime.now().year)
+
     numero_orden = f"NR-{anio}-{oid:04d}"
-    cur.execute("UPDATE ordenes SET numero_orden=? WHERE id=?", (numero_orden, oid))
+    cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s", (numero_orden, oid))
 
     con.commit()
     con.close()
@@ -90,9 +143,10 @@ def crear():
     <p><a href="/">Volver</a></p>
     """
 
+
 @app.get("/buscar")
 def buscar():
-    numero = request.args.get("numero","").strip()
+    numero = request.args.get("numero", "").strip()
     if not numero:
         return """
         <h3>Buscar orden</h3>
@@ -104,12 +158,14 @@ def buscar():
         """
 
     con = db()
-    cur = con.cursor()
+    cur = con.cursor(cursor_factory=RealDictCursor)
+
     cur.execute("""
       SELECT o.numero_orden, c.nombre, c.telefono, c.email, o.tipo_equipo, o.marca, o.modelo,
              o.estado, o.presupuesto, o.diagnostico_tecnico
-      FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
-      WHERE o.numero_orden=?
+      FROM ordenes o
+      JOIN clientes c ON o.cliente_id=c.id
+      WHERE o.numero_orden=%s
     """, (numero,))
     r = cur.fetchone()
     con.close()
@@ -117,7 +173,7 @@ def buscar():
     if not r:
         return f"<p>No encontrada: {numero}</p><p><a href='/buscar'>Volver</a></p>"
 
-    pres = "En diagnóstico" if float(r["presupuesto"]) == 0 else f"${r['presupuesto']}"
+    pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
     return f"""
     <h3>Orden {r['numero_orden']}</h3>
     <p><b>Cliente:</b> {r['nombre']} ({r['telefono']}) - {r['email']}</p>
@@ -129,10 +185,11 @@ def buscar():
     <p><a href="/">Volver</a></p>
     """
 
-@app.route("/actualizar", methods=["GET","POST"])
+
+@app.route("/actualizar", methods=["GET", "POST"])
 def actualizar():
     if request.method == "GET":
-        numero = request.args.get("numero","").strip()
+        numero = request.args.get("numero", "").strip()
         return f"""
         <h3>Actualizar orden</h3>
         <form method="post">
@@ -145,35 +202,36 @@ def actualizar():
         <p><a href="/">Volver</a></p>
         """
 
-    numero = request.form.get("numero","").strip()
-    nuevo_estado = request.form.get("estado","").strip()
-    nuevo_diag = request.form.get("diag","").strip()
-    nuevo_pres = request.form.get("presupuesto","").strip()
+    numero = request.form.get("numero", "").strip()
+    nuevo_estado = request.form.get("estado", "").strip()
+    nuevo_diag = request.form.get("diag", "").strip()
+    nuevo_pres = request.form.get("presupuesto", "").strip()
 
     con = db()
-    cur = con.cursor()
-    cur.execute("SELECT estado, diagnostico_tecnico, presupuesto FROM ordenes WHERE numero_orden=?", (numero,))
+    cur = con.cursor(cursor_factory=RealDictCursor)
+
+    cur.execute("SELECT estado, diagnostico_tecnico, presupuesto FROM ordenes WHERE numero_orden=%s", (numero,))
     old = cur.fetchone()
     if not old:
         con.close()
         return f"<p>No encontrada: {numero}</p><p><a href='/actualizar'>Volver</a></p>"
 
     if nuevo_estado:
-        cur.execute("UPDATE ordenes SET estado=? WHERE numero_orden=?", (nuevo_estado, numero))
+        cur.execute("UPDATE ordenes SET estado=%s WHERE numero_orden=%s", (nuevo_estado, numero))
     if nuevo_diag:
-        cur.execute("UPDATE ordenes SET diagnostico_tecnico=? WHERE numero_orden=?", (nuevo_diag, numero))
+        cur.execute("UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s", (nuevo_diag, numero))
     if nuevo_pres:
         try:
             p = float(nuevo_pres)
         except:
             p = 0.0
-        cur.execute("UPDATE ordenes SET presupuesto=? WHERE numero_orden=?", (p, numero))
+        cur.execute("UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s", (p, numero))
 
     con.commit()
     con.close()
     return redirect(f"/buscar?numero={numero}")
 
+
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=False)
