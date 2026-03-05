@@ -92,7 +92,6 @@ def home():
       <li><a href="/logout">Salir</a></li>
     </ul>
     """
-
 @app.route("/crear", methods=["GET", "POST"])
 def crear():
     if not session.get("login"):
