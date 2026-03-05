@@ -1,9 +1,13 @@
-from flask import Flask, request, redirect
+from flask import Flask, request, redirect, session
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 app = Flask(__name__)
+app.secret_key = "nrtech_secret_key"
+
+USER = "admin"
+PASS = "N41043406@"
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -50,9 +54,35 @@ def init_db():
 # crear tablas al iniciar
 init_db()
 
+@app.route("/login", methods=["GET","POST"])
+def login():
+    if request.method == "GET":
+        return """
+        <h3>Login NR Tech</h3>
+        <form method="post">
+          Usuario: <input name="user"><br>
+          Contraseña: <input name="pass" type="password"><br>
+          <button>Entrar</button>
+        </form>
+        """
+
+    user = request.form.get("user","").strip()
+    password = request.form.get("pass","").strip()
+
+    if user == USER and password == PASS:
+        session["login"] = True
+        return redirect("/")
+    else:
+        return "<p>Usuario o contraseña incorrectos</p><p><a href='/login'>Volver</a></p>"
+@app.get("/logout")
+def logout():
+    session.pop("login", None)
+    return redirect("/login")
 
 @app.get("/")
 def home():
+    if not session.get("login"):
+        return redirect("/login")
     return """
     <h2>NR Tech - Taller (Web)</h2>
     <ul>
@@ -60,11 +90,22 @@ def home():
       <li><a href="/buscar">Buscar orden</a></li>
       <li><a href="/actualizar">Actualizar orden</a></li>
     </ul>
+    """    return """
+    <h2>NR Tech - Taller (Web)</h2>
+    <ul>
+      <li><a href="/crear">Crear orden</a></li>
+      <li><a href="/buscar">Buscar orden</a></li>
+      <li><a href="/actualizar">Actualizar orden</a></li>
+      <li><a href="/logout">Salir</a></li>
+    </ul>
     """
 
 
 @app.route("/crear", methods=["GET", "POST"])
 def crear():
+    if not session.get("login"):
+        return redirect("/login")
+
     if request.method == "GET":
         return """
         <h3>Crear orden</h3>
@@ -146,6 +187,9 @@ def crear():
 
 @app.get("/buscar")
 def buscar():
+    if not session.get("login"):
+        return redirect("/login")
+
     numero = request.args.get("numero", "").strip()
     if not numero:
         return """
@@ -188,6 +232,9 @@ def buscar():
 
 @app.route("/actualizar", methods=["GET", "POST"])
 def actualizar():
+    if not session.get("login"):
+        return redirect("/login")
+
     if request.method == "GET":
         numero = request.args.get("numero", "").strip()
         return f"""
