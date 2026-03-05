@@ -89,17 +89,9 @@ def home():
       <li><a href="/crear">Crear orden</a></li>
       <li><a href="/buscar">Buscar orden</a></li>
       <li><a href="/actualizar">Actualizar orden</a></li>
-    </ul>
-    """    return """
-    <h2>NR Tech - Taller (Web)</h2>
-    <ul>
-      <li><a href="/crear">Crear orden</a></li>
-      <li><a href="/buscar">Buscar orden</a></li>
-      <li><a href="/actualizar">Actualizar orden</a></li>
       <li><a href="/logout">Salir</a></li>
     </ul>
     """
-
 
 @app.route("/crear", methods=["GET", "POST"])
 def crear():
