@@ -1,7 +1,7 @@
 from flask import Flask, request, redirect, session
 import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
+import psycopg
+from psycopg.rows import dict_row
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
@@ -14,7 +14,7 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def db():
     # Render Postgres requiere ssl
-    return psycopg2.connect(DATABASE_URL, sslmode="require")
+    return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
 
 
 def init_db():
@@ -128,7 +128,7 @@ def crear():
     falla_cliente = request.form.get("falla_cliente", "").strip()
 
     con = db()
-    cur = con.cursor(cursor_factory=RealDictCursor)
+    cur = con.cursor()
 
     # cliente
     cur.execute("SELECT id FROM clientes WHERE email=%s", (email,))
@@ -193,7 +193,7 @@ def buscar():
         """
 
     con = db()
-    cur = con.cursor(cursor_factory=RealDictCursor)
+    cur = con.cursor()
 
     cur.execute("""
       SELECT o.numero_orden, c.nombre, c.telefono, c.email, o.tipo_equipo, o.marca, o.modelo,
@@ -246,7 +246,7 @@ def actualizar():
     nuevo_pres = request.form.get("presupuesto", "").strip()
 
     con = db()
-    cur = con.cursor(cursor_factory=RealDictCursor)
+    cur = con.cursor()
 
     cur.execute("SELECT estado, diagnostico_tecnico, presupuesto FROM ordenes WHERE numero_orden=%s", (numero,))
     old = cur.fetchone()
