@@ -87,9 +87,10 @@ def home():
     <h2>NR Tech - Taller (Web)</h2>
     <ul>
       <li><a href="/crear">Crear orden</a></li>
-      <li><a href="/buscar">Buscar orden</a></li>
-      <li><a href="/actualizar">Actualizar orden</a></li>
-      <li><a href="/logout">Salir</a></li>
+<li><a href="/buscar">Buscar orden</a></li>
+<li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
+<li><a href="/actualizar">Actualizar orden</a></li>
+<li><a href="/logout">Salir</a></li>
     </ul>
     """
 @app.route("/crear", methods=["GET", "POST"])
@@ -269,6 +270,55 @@ def actualizar():
     con.close()
     return redirect(f"/buscar?numero={numero}")
 
+@app.get("/ver_ordenes")
+def ver_ordenes():
+    if not session.get("login"):
+        return redirect("/login")
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT o.numero_orden, c.nombre, o.tipo_equipo, o.marca, o.modelo,
+               o.estado, o.presupuesto
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id = c.id
+        ORDER BY o.id DESC
+    """)
+    ordenes = cur.fetchall()
+    con.close()
+
+    html = """
+    <h2>Todas las órdenes</h2>
+    <p><a href="/">Volver al menú</a></p>
+    <table border="1" cellpadding="8" cellspacing="0">
+      <tr>
+        <th>Número</th>
+        <th>Cliente</th>
+        <th>Equipo</th>
+        <th>Estado</th>
+        <th>Presupuesto</th>
+        <th>Acción</th>
+      </tr>
+    """
+
+    for orden in ordenes:
+        presupuesto = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
+        equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+
+        html += f"""
+        <tr>
+          <td>{orden['numero_orden']}</td>
+          <td>{orden['nombre']}</td>
+          <td>{equipo}</td>
+          <td>{orden['estado']}</td>
+          <td>{presupuesto}</td>
+          <td><a href="/actualizar?numero={orden['numero_orden']}">Actualizar</a></td>
+        </tr>
+        """
+
+    html += "</table>"
+    return html
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
