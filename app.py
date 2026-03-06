@@ -233,7 +233,17 @@ def actualizar():
         <h3>Actualizar orden</h3>
         <form method="post">
           Número: <input name="numero" value="{numero}"><br>
-          Nuevo estado: <input name="estado"><br>
+          Nuevo estado:
+<select name="estado">
+<option value="">-- elegir --</option>
+<option value="Recibido en taller">Recibido en taller</option>
+<option value="En diagnóstico">En diagnóstico</option>
+<option value="Esperando aprobación">Esperando aprobación</option>
+<option value="Esperando repuesto">Esperando repuesto</option>
+<option value="En reparación">En reparación</option>
+<option value="Listo para retirar">Listo para retirar</option>
+<option value="Entregado">Entregado</option>
+</select><br>
           Nuevo diagnóstico: <input name="diag"><br>
           Nuevo presupuesto: <input name="presupuesto"><br>
           <button type="submit">Guardar</button>
