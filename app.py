@@ -7,17 +7,18 @@ import mimetypes
 from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formataddr
+import datetime
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
 
 USER = "admin"
 PASS = "N41043406@"
+
 REMITENTE_EMAIL = os.environ.get("GMAIL_USER")
 CONTRASENA_APP = os.environ.get("GMAIL_APP_PASSWORD")
 WHATSAPP_LINK = "https://wa.me/59898705065"
 BASE_URL = os.environ.get("BASE_URL")
-
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
@@ -61,12 +62,14 @@ def init_db():
     con.commit()
     con.close()
 
+
 def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto):
-
-
+    if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
+        print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
+        return
 
     try:
-        pres = float(presupuesto)
+        pres = float(presupuesto or 0)
     except:
         pres = 0.0
 
@@ -80,7 +83,6 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
     <html>
       <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
         <div style="max-width:720px; margin:0 auto; padding:22px;">
-
           <div style="background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; overflow:hidden; box-shadow:0 10px 30px rgba(17,24,39,0.08);">
 
             <div style="background:linear-gradient(135deg,#38bdf8,#3b82f6); padding:40px 22px; text-align:center;">
@@ -143,12 +145,12 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
     msg["To"] = destino
 
     msg.set_content(
-        f"Hola {cliente}.\\n\\n"
-        f"Orden: {numero_orden}\\n"
-        f"Equipo: {tipo} {marca} {modelo}\\n"
-        f"Estado: {estado}\\n"
-        f"Presupuesto: {presupuesto_mostrar}\\n\\n"
-        f"WhatsApp: {WHATSAPP_LINK}\\n"
+        f"Hola {cliente}.\n\n"
+        f"Orden: {numero_orden}\n"
+        f"Equipo: {tipo} {marca} {modelo}\n"
+        f"Estado: {estado}\n"
+        f"Presupuesto: {presupuesto_mostrar}\n\n"
+        f"WhatsApp: {WHATSAPP_LINK}\n"
         f"NR Tech"
     )
     msg.add_alternative(cuerpo_html, subtype="html")
@@ -169,40 +171,6 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
         print("Email enviado correctamente.")
     except Exception as e:
         print("Error al enviar email:", e)
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS clientes (
-        id SERIAL PRIMARY KEY,
-        nombre TEXT,
-        telefono TEXT,
-        email TEXT UNIQUE
-    );
-    """)
-
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS ordenes (
-        id SERIAL PRIMARY KEY,
-        numero_orden TEXT UNIQUE,
-        cliente_id INTEGER REFERENCES clientes(id),
-        tipo_equipo TEXT,
-        marca TEXT,
-        modelo TEXT,
-        numero_serie TEXT,
-        imei TEXT,
-        estado_general TEXT,
-        falla_cliente TEXT,
-        diagnostico_tecnico TEXT,
-        fecha_ingreso DATE,
-        estado TEXT,
-        presupuesto NUMERIC DEFAULT 0,
-        observaciones TEXT
-    );
-    """)
-
-    con.commit()
-    con.close()
 
 
 init_db()
@@ -210,14 +178,13 @@ init_db()
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-
     if request.method == "GET":
         return """
         <h3>Login NR Tech</h3>
         <form method="post">
-        Usuario: <input name="user"><br>
-        Contraseña: <input name="pass" type="password"><br>
-        <button>Entrar</button>
+          Usuario: <input name="user"><br>
+          Contraseña: <input name="pass" type="password"><br>
+          <button>Entrar</button>
         </form>
         """
 
@@ -239,64 +206,58 @@ def logout():
 
 @app.get("/")
 def home():
-
     if not session.get("login"):
         return redirect("/login")
 
     return """
     <h2>NR Tech - Taller</h2>
-
     <ul>
-    <li><a href="/crear">Crear orden</a></li>
-    <li><a href="/buscar">Buscar orden</a></li>
-    <li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
-    <li><a href="/logout">Salir</a></li>
+      <li><a href="/crear">Crear orden</a></li>
+      <li><a href="/buscar">Buscar orden</a></li>
+      <li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
+      <li><a href="/logout">Salir</a></li>
     </ul>
     """
 
 
 @app.route("/crear", methods=["GET", "POST"])
 def crear():
-
     if not session.get("login"):
         return redirect("/login")
 
     if request.method == "GET":
         return """
         <h3>Crear orden</h3>
-
         <form method="post">
+          Nombre: <input name="nombre"><br>
+          Teléfono: <input name="telefono"><br>
+          Email: <input name="email"><br><br>
 
-        Nombre: <input name="nombre"><br>
-        Teléfono: <input name="telefono"><br>
-        Email: <input name="email"><br><br>
+          Tipo equipo: <input name="tipo"><br>
+          Marca: <input name="marca"><br>
+          Modelo: <input name="modelo"><br>
+          N° serie: <input name="numero_serie"><br>
+          IMEI: <input name="imei"><br>
 
-        Tipo equipo: <input name="tipo"><br>
-        Marca: <input name="marca"><br>
-        Modelo: <input name="modelo"><br>
-        N° serie: <input name="numero_serie"><br>
-        IMEI: <input name="imei"><br>
+          Estado general: <input name="estado_general"><br>
+          Falla cliente: <input name="falla_cliente"><br>
 
-        Estado general: <input name="estado_general"><br>
-        Falla cliente: <input name="falla_cliente"><br>
-
-        <button type="submit">Guardar</button>
-
+          <button type="submit">Guardar</button>
         </form>
 
         <p><a href="/">Volver</a></p>
         """
 
-    nombre = request.form.get("nombre", "")
-    telefono = request.form.get("telefono", "")
-    email = request.form.get("email", "")
-    tipo = request.form.get("tipo", "")
-    marca = request.form.get("marca", "")
-    modelo = request.form.get("modelo", "")
-    numero_serie = request.form.get("numero_serie", "")
-    imei = request.form.get("imei", "")
-    estado_general = request.form.get("estado_general", "")
-    falla_cliente = request.form.get("falla_cliente", "")
+    nombre = request.form.get("nombre", "").strip()
+    telefono = request.form.get("telefono", "").strip()
+    email = request.form.get("email", "").strip()
+    tipo = request.form.get("tipo", "").strip()
+    marca = request.form.get("marca", "").strip()
+    modelo = request.form.get("modelo", "").strip()
+    numero_serie = request.form.get("numero_serie", "").strip()
+    imei = request.form.get("imei", "").strip()
+    estado_general = request.form.get("estado_general", "").strip()
+    falla_cliente = request.form.get("falla_cliente", "").strip()
 
     con = db()
     cur = con.cursor()
@@ -316,8 +277,8 @@ def crear():
     cur.execute(
         """
         INSERT INTO ordenes(
-        numero_orden,cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,
-        estado_general,falla_cliente,diagnostico_tecnico,fecha_ingreso,estado,presupuesto,observaciones
+            numero_orden, cliente_id, tipo_equipo, marca, modelo, numero_serie, imei,
+            estado_general, falla_cliente, diagnostico_tecnico, fecha_ingreso, estado, presupuesto, observaciones
         )
         VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_DATE,%s,%s,%s)
         RETURNING id
@@ -340,11 +301,7 @@ def crear():
     )
 
     oid = cur.fetchone()["id"]
-
-    import datetime
-
     anio = datetime.datetime.now().year
-
     numero_orden = f"NR-{anio}-{oid:04d}"
 
     cur.execute(
@@ -355,11 +312,21 @@ def crear():
     con.commit()
     con.close()
 
+    print("Intentando enviar email a:", email)
+    enviar_email(
+        destino=email,
+        numero_orden=numero_orden,
+        cliente=nombre,
+        tipo=tipo,
+        marca=marca,
+        modelo=modelo,
+        estado="Recibido en taller",
+        presupuesto=0
+    )
+
     return f"""
     <h3>Orden creada</h3>
-
     Numero: {numero_orden}
-
     <p><a href="/buscar?q={numero_orden}">Ver orden</a></p>
     <p><a href="/">Volver</a></p>
     """
@@ -367,27 +334,19 @@ def crear():
 
 @app.get("/buscar")
 def buscar():
-
     if not session.get("login"):
         return redirect("/login")
 
     q = request.args.get("q", "").strip()
 
     if not q:
-
         return """
         <h3>Buscar orden</h3>
-
         <form>
-
-        Buscar por numero, nombre, telefono, email, imei o serie<br><br>
-
-        <input name="q">
-
-        <button>Buscar</button>
-
+          Buscar por numero, nombre, telefono, email, imei o serie<br><br>
+          <input name="q">
+          <button>Buscar</button>
         </form>
-
         <p><a href="/">Volver</a></p>
         """
 
@@ -397,24 +356,21 @@ def buscar():
     cur.execute(
         """
         SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-        o.estado,o.presupuesto
-
+               o.estado,o.presupuesto
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
-
         WHERE
-        o.numero_orden ILIKE %s OR
-        c.nombre ILIKE %s OR
-        c.telefono ILIKE %s OR
-        c.email ILIKE %s OR
-        o.imei ILIKE %s OR
-        o.numero_serie ILIKE %s
+            o.numero_orden ILIKE %s OR
+            c.nombre ILIKE %s OR
+            c.telefono ILIKE %s OR
+            c.email ILIKE %s OR
+            o.imei ILIKE %s OR
+            o.numero_serie ILIKE %s
         """,
         (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
     )
 
     resultados = cur.fetchall()
-
     con.close()
 
     if not resultados:
@@ -422,49 +378,38 @@ def buscar():
 
     html = """
     <h3>Resultados</h3>
-
     <table border=1 cellpadding=6>
-
     <tr>
-    <th>Numero</th>
-    <th>Cliente</th>
-    <th>Equipo</th>
-    <th>Estado</th>
-    <th>Presupuesto</th>
-    <th></th>
+      <th>Numero</th>
+      <th>Cliente</th>
+      <th>Equipo</th>
+      <th>Estado</th>
+      <th>Presupuesto</th>
+      <th></th>
     </tr>
     """
 
     for r in resultados:
-
         equipo = f"{r['tipo_equipo']} {r['marca']} {r['modelo']}"
+        pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
 
         html += f"""
         <tr>
-
-        <td>{r['numero_orden']}</td>
-        <td>{r['nombre']}</td>
-        <td>{equipo}</td>
-        <td>{r['estado']}</td>
-        <td>{r['presupuesto']}</td>
-
-        <td>
-
-        <a href="/actualizar?numero={r['numero_orden']}">Actualizar</a>
-
-        </td>
-
+          <td>{r['numero_orden']}</td>
+          <td>{r['nombre']}</td>
+          <td>{equipo}</td>
+          <td>{r['estado']}</td>
+          <td>{pres}</td>
+          <td><a href="/actualizar?numero={r['numero_orden']}">Actualizar</a></td>
         </tr>
         """
 
     html += "</table><p><a href='/'>Volver</a></p>"
-
     return html
 
 
 @app.get("/ver_ordenes")
 def ver_ordenes():
-
     if not session.get("login"):
         return redirect("/login")
 
@@ -474,112 +419,90 @@ def ver_ordenes():
     cur.execute(
         """
         SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-        o.estado,o.presupuesto
-
+               o.estado,o.presupuesto
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
-
         ORDER BY o.id DESC
         """
     )
 
     ordenes = cur.fetchall()
-
     con.close()
 
     html = """
     <h2>Todas las ordenes</h2>
-
     <table border=1 cellpadding=6>
-
     <tr>
-    <th>Numero</th>
-    <th>Cliente</th>
-    <th>Equipo</th>
-    <th>Estado</th>
-    <th>Presupuesto</th>
-    <th></th>
+      <th>Numero</th>
+      <th>Cliente</th>
+      <th>Equipo</th>
+      <th>Estado</th>
+      <th>Presupuesto</th>
+      <th></th>
     </tr>
     """
 
     for o in ordenes:
-
         equipo = f"{o['tipo_equipo']} {o['marca']} {o['modelo']}"
+        pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
 
         html += f"""
         <tr>
-
-        <td>{o['numero_orden']}</td>
-        <td>{o['nombre']}</td>
-        <td>{equipo}</td>
-        <td>{o['estado']}</td>
-        <td>{o['presupuesto']}</td>
-
-        <td>
-
-        <a href="/actualizar?numero={o['numero_orden']}">Actualizar</a>
-
-        </td>
-
+          <td>{o['numero_orden']}</td>
+          <td>{o['nombre']}</td>
+          <td>{equipo}</td>
+          <td>{o['estado']}</td>
+          <td>{pres}</td>
+          <td><a href="/actualizar?numero={o['numero_orden']}">Actualizar</a></td>
         </tr>
         """
 
     html += "</table><p><a href='/'>Volver</a></p>"
-
     return html
 
 
 @app.route("/actualizar", methods=["GET", "POST"])
 def actualizar():
-
     if not session.get("login"):
         return redirect("/login")
 
     if request.method == "GET":
-
-        numero = request.args.get("numero", "")
+        numero = request.args.get("numero", "").strip()
 
         return f"""
         <h3>Actualizar orden</h3>
-
         <form method="post">
+          Numero
+          <input name="numero" value="{numero}"><br><br>
 
-        Numero
-        <input name="numero" value="{numero}"><br><br>
+          Estado
+          <select name="estado">
+            <option value="">-- elegir --</option>
+            <option value="En diagnóstico">En diagnóstico</option>
+            <option value="Esperando aprobación">Esperando aprobación</option>
+            <option value="Esperando repuesto">Esperando repuesto</option>
+            <option value="En reparación">En reparación</option>
+            <option value="Listo para retirar">Listo para retirar</option>
+            <option value="Entregado">Entregado</option>
+          </select>
+          <br><br>
 
-        Estado
+          Diagnostico
+          <input name="diag"><br>
 
-        <select name="estado">
+          Presupuesto
+          <input name="presupuesto"><br>
 
-        <option value="">-- elegir --</option>
-        <option value="En diagnostico">En diagnostico</option>
-        <option value="Esperando aprobacion">Esperando aprobacion</option>
-        <option value="Esperando repuesto">Esperando repuesto</option>
-        <option value="En reparacion">En reparacion</option>
-        <option value="Listo para retirar">Listo para retirar</option>
-        <option value="Entregado">Entregado</option>
-
-        </select>
-
-        <br><br>
-
-        Diagnostico
-        <input name="diag"><br>
-
-        Presupuesto
-        <input name="presupuesto"><br>
-
-        <button>Guardar</button>
-
+          <button>Guardar</button>
         </form>
 
         <p><a href="/">Volver</a></p>
         """
 
-    numero = request.form.get("numero")
-    estado = request.form.get("estado")
-    diag = request.form.get("diag")
-    pres = request.form.get("presupuesto")
+    numero = request.form.get("numero", "").strip()
+    estado = request.form.get("estado", "").strip()
+    diag = request.form.get("diag", "").strip()
+    pres = request.form.get("presupuesto", "").strip()
 
     con = db()
     cur = con.cursor()
@@ -602,14 +525,37 @@ def actualizar():
             (pres, numero),
         )
 
+    cur.execute(
+        """
+        SELECT o.numero_orden, c.nombre, c.email, o.tipo_equipo, o.marca, o.modelo,
+               o.estado, o.presupuesto
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id=c.id
+        WHERE o.numero_orden=%s
+        """,
+        (numero,),
+    )
+    info = cur.fetchone()
+
     con.commit()
     con.close()
+
+    if info and info["email"]:
+        print("Intentando enviar actualización a:", info["email"])
+        enviar_email(
+            destino=info["email"],
+            numero_orden=info["numero_orden"],
+            cliente=info["nombre"],
+            tipo=info["tipo_equipo"],
+            marca=info["marca"],
+            modelo=info["modelo"],
+            estado=info["estado"],
+            presupuesto=info["presupuesto"]
+        )
 
     return redirect(f"/buscar?q={numero}")
 
 
 if __name__ == "__main__":
-
     port = int(os.environ.get("PORT", 5000))
-
     app.run(host="0.0.0.0", port=port)
