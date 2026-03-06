@@ -61,7 +61,30 @@ def init_db():
 
     con.commit()
     con.close()
-    
+
+
+def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto, tipo_mensaje="actualizacion"):
+    if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
+        print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
+        return
+
+    try:
+        pres = float(presupuesto or 0)
+    except:
+        pres = 0.0
+
+    presupuesto_mostrar = "En diagnóstico" if pres == 0 else f"${pres}"
+
+    if tipo_mensaje == "ingreso":
+        asunto = f"Ingreso de orden {numero_orden} – NR Tech"
+        saludo_texto = "te confirmamos el ingreso de tu equipo al taller:"
+    else:
+        asunto = f"Actualización de orden {numero_orden} – NR Tech"
+        saludo_texto = "te informamos una actualización de tu orden:"
+
+    logo_path = Path(__file__).with_name("logo_nrtech.png")
+    logo_cid = "logo_nrtech" if logo_path.exists() else None
+
     cuerpo_html = f"""
     <html>
       <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
@@ -75,7 +98,7 @@ def init_db():
 
             <div style="padding:18px 22px 10px 22px;">
               <p style="margin:0 0 12px 0; font-size:14px;">
-               Hola <strong>{cliente}</strong>, {saludo_texto}
+                Hola <strong>{cliente}</strong>, {saludo_texto}
               </p>
 
               <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:14px; padding:14px;">
@@ -296,7 +319,6 @@ def crear():
     con.close()
 
     print("Intentando enviar email de ingreso a:", email)
-
     enviar_email(
         destino=email,
         numero_orden=numero_orden,
