@@ -74,6 +74,7 @@ def login():
         return redirect("/")
     else:
         return "<p>Usuario o contraseña incorrectos</p><p><a href='/login'>Volver</a></p>"
+
 @app.get("/logout")
 def logout():
     session.pop("login", None)
