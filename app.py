@@ -25,7 +25,46 @@ def db():
     return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
 
 
+def init_db():
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS clientes (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT,
+        telefono TEXT,
+        email TEXT UNIQUE
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS ordenes (
+        id SERIAL PRIMARY KEY,
+        numero_orden TEXT UNIQUE,
+        cliente_id INTEGER REFERENCES clientes(id),
+        tipo_equipo TEXT,
+        marca TEXT,
+        modelo TEXT,
+        numero_serie TEXT,
+        imei TEXT,
+        estado_general TEXT,
+        falla_cliente TEXT,
+        diagnostico_tecnico TEXT,
+        fecha_ingreso DATE,
+        estado TEXT,
+        presupuesto NUMERIC DEFAULT 0,
+        observaciones TEXT
+    );
+    """)
+
+    con.commit()
+    con.close()
+
 def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto):
+
+
+
     try:
         pres = float(presupuesto)
     except:
@@ -41,6 +80,7 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
     <html>
       <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
         <div style="max-width:720px; margin:0 auto; padding:22px;">
+
           <div style="background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; overflow:hidden; box-shadow:0 10px 30px rgba(17,24,39,0.08);">
 
             <div style="background:linear-gradient(135deg,#38bdf8,#3b82f6); padding:40px 22px; text-align:center;">
@@ -103,12 +143,12 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
     msg["To"] = destino
 
     msg.set_content(
-        f"Hola {cliente}.\n\n"
-        f"Orden: {numero_orden}\n"
-        f"Equipo: {tipo} {marca} {modelo}\n"
-        f"Estado: {estado}\n"
-        f"Presupuesto: {presupuesto_mostrar}\n\n"
-        f"WhatsApp: {WHATSAPP_LINK}\n"
+        f"Hola {cliente}.\\n\\n"
+        f"Orden: {numero_orden}\\n"
+        f"Equipo: {tipo} {marca} {modelo}\\n"
+        f"Estado: {estado}\\n"
+        f"Presupuesto: {presupuesto_mostrar}\\n\\n"
+        f"WhatsApp: {WHATSAPP_LINK}\\n"
         f"NR Tech"
     )
     msg.add_alternative(cuerpo_html, subtype="html")
@@ -129,9 +169,6 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
         print("Email enviado correctamente.")
     except Exception as e:
         print("Error al enviar email:", e)
-
-
-def init_db():
     con = db()
     cur = con.cursor()
 
@@ -166,6 +203,101 @@ def init_db():
 
     con.commit()
     con.close()
+
+
+init_db()
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+
+    if request.method == "GET":
+        return """
+        <h3>Login NR Tech</h3>
+        <form method="post">
+        Usuario: <input name="user"><br>
+        Contraseña: <input name="pass" type="password"><br>
+        <button>Entrar</button>
+        </form>
+        """
+
+    user = request.form.get("user", "").strip()
+    password = request.form.get("pass", "").strip()
+
+    if user == USER and password == PASS:
+        session["login"] = True
+        return redirect("/")
+    else:
+        return "<p>Usuario o contraseña incorrectos</p><p><a href='/login'>Volver</a></p>"
+
+
+@app.get("/logout")
+def logout():
+    session.pop("login", None)
+    return redirect("/login")
+
+
+@app.get("/")
+def home():
+
+    if not session.get("login"):
+        return redirect("/login")
+
+    return """
+    <h2>NR Tech - Taller</h2>
+
+    <ul>
+    <li><a href="/crear">Crear orden</a></li>
+    <li><a href="/buscar">Buscar orden</a></li>
+    <li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
+    <li><a href="/logout">Salir</a></li>
+    </ul>
+    """
+
+
+@app.route("/crear", methods=["GET", "POST"])
+def crear():
+
+    if not session.get("login"):
+        return redirect("/login")
+
+    if request.method == "GET":
+        return """
+        <h3>Crear orden</h3>
+
+        <form method="post">
+
+        Nombre: <input name="nombre"><br>
+        Teléfono: <input name="telefono"><br>
+        Email: <input name="email"><br><br>
+
+        Tipo equipo: <input name="tipo"><br>
+        Marca: <input name="marca"><br>
+        Modelo: <input name="modelo"><br>
+        N° serie: <input name="numero_serie"><br>
+        IMEI: <input name="imei"><br>
+
+        Estado general: <input name="estado_general"><br>
+        Falla cliente: <input name="falla_cliente"><br>
+
+        <button type="submit">Guardar</button>
+
+        </form>
+
+        <p><a href="/">Volver</a></p>
+        """
+
+    nombre = request.form.get("nombre", "")
+    telefono = request.form.get("telefono", "")
+    email = request.form.get("email", "")
+    tipo = request.form.get("tipo", "")
+    marca = request.form.get("marca", "")
+    modelo = request.form.get("modelo", "")
+    numero_serie = request.form.get("numero_serie", "")
+    imei = request.form.get("imei", "")
+    estado_general = request.form.get("estado_general", "")
+    falla_cliente = request.form.get("falla_cliente", "")
+
     con = db()
     cur = con.cursor()
 
