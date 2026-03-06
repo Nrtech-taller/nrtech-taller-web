@@ -251,6 +251,8 @@ def buscar():
 
     html += "</table><p><a href='/'>Volver</a></p>"
     return html
+    html += "</table><p><a href='/'>Volver</a></p>"
+    return html
     html += "</table>"
     return html
 
