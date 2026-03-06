@@ -182,16 +182,76 @@ def buscar():
     if not session.get("login"):
         return redirect("/login")
 
-    numero = request.args.get("numero", "").strip()
-    if not numero:
+    q = request.args.get("q", "").strip()
+
+    if not q:
         return """
         <h3>Buscar orden</h3>
         <form>
-          Número (NR-AAAA-0001): <input name="numero">
+          Buscar por número, nombre, teléfono, email, IMEI o serie:<br><br>
+          <input name="q">
           <button>Buscar</button>
         </form>
         <p><a href="/">Volver</a></p>
         """
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT o.numero_orden, c.nombre, c.telefono, c.email,
+               o.tipo_equipo, o.marca, o.modelo,
+               o.estado, o.presupuesto
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id = c.id
+        WHERE
+            o.numero_orden ILIKE %s OR
+            c.nombre ILIKE %s OR
+            c.telefono ILIKE %s OR
+            c.email ILIKE %s OR
+            o.imei ILIKE %s OR
+            o.numero_serie ILIKE %s
+        ORDER BY o.id DESC
+    """, (f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%"))
+
+    resultados = cur.fetchall()
+    con.close()
+
+    if not resultados:
+        return f"<p>No se encontraron resultados para: {q}</p><p><a href='/buscar'>Volver</a></p>"
+
+    html = """
+    <h3>Resultados</h3>
+    <p><a href="/buscar">Nueva búsqueda</a></p>
+    <table border="1" cellpadding="8">
+    <tr>
+      <th>Número</th>
+      <th>Cliente</th>
+      <th>Equipo</th>
+      <th>Estado</th>
+      <th>Presupuesto</th>
+      <th>Acción</th>
+    </tr>
+    """
+
+    for r in resultados:
+        equipo = f"{r['tipo_equipo']} {r['marca']} {r['modelo']}"
+        pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
+
+        html += f"""
+        <tr>
+          <td>{r['numero_orden']}</td>
+          <td>{r['nombre']}</td>
+          <td>{equipo}</td>
+          <td>{r['estado']}</td>
+          <td>{pres}</td>
+          <td><a href="/buscar?numero={r['numero_orden']}">Ver</a></td>
+        </tr>
+        """
+
+    html += "</table><p><a href='/'>Volver</a></p>"
+
+    return html        """
 
     con = db()
     cur = con.cursor()
