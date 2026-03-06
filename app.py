@@ -2,18 +2,133 @@ from flask import Flask, request, redirect, session
 import os
 import psycopg
 from psycopg.rows import dict_row
+import smtplib
+import mimetypes
+from pathlib import Path
+from email.message import EmailMessage
+from email.utils import formataddr
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
 
 USER = "admin"
 PASS = "N41043406@"
+REMITENTE_EMAIL = os.environ.get("GMAIL_USER")
+CONTRASENA_APP = os.environ.get("GMAIL_APP_PASSWORD")
+WHATSAPP_LINK = "https://wa.me/59898705065"
+BASE_URL = os.environ.get("BASE_URL")
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
 def db():
     return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
+
+
+def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto):
+    try:
+        pres = float(presupuesto)
+    except:
+        pres = 0.0
+
+    presupuesto_mostrar = "En diagnóstico" if pres == 0 else f"${pres}"
+    asunto = f"Actualización de orden {numero_orden} – NR Tech"
+
+    logo_path = Path(__file__).with_name("logo_nrtech.png")
+    logo_cid = "logo_nrtech" if logo_path.exists() else None
+
+    cuerpo_html = f"""
+    <html>
+      <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
+        <div style="max-width:720px; margin:0 auto; padding:22px;">
+          <div style="background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; overflow:hidden; box-shadow:0 10px 30px rgba(17,24,39,0.08);">
+
+            <div style="background:linear-gradient(135deg,#38bdf8,#3b82f6); padding:40px 22px; text-align:center;">
+              {("<img src='cid:logo_nrtech' alt='NR Tech' style='max-height:180px; width:auto; display:block; margin:0 auto;' />" if logo_cid else "")}
+              <div style="width:60px; height:3px; background:rgba(255,255,255,0.6); margin:18px auto 0 auto; border-radius:10px;"></div>
+            </div>
+
+            <div style="padding:18px 22px 10px 22px;">
+              <p style="margin:0 0 12px 0; font-size:14px;">
+                Hola <strong>{cliente}</strong>, te informamos una actualización de tu orden:
+              </p>
+
+              <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:14px; padding:14px;">
+                <div style="margin:6px 0; font-size:13px;"><strong>N° de orden:</strong> <span style="color:#2563eb;">{numero_orden}</span></div>
+                <div style="margin:6px 0; font-size:13px;"><strong>Equipo:</strong> {tipo} {marca} {modelo}</div>
+                <div style="margin:6px 0; font-size:13px;"><strong>Estado:</strong> <span style="color:#16a34a;">{estado}</span></div>
+                <div style="margin:6px 0; font-size:13px;"><strong>Presupuesto:</strong> <span style="color:#b45309;">{presupuesto_mostrar}</span></div>
+              </div>
+
+              <div style="text-align:center; margin-top:18px;">
+                <a href="{WHATSAPP_LINK}" style="
+                  display:inline-block;
+                  background:#111827;
+                  color:#ffffff;
+                  text-decoration:none;
+                  font-weight:600;
+                  padding:14px 22px;
+                  border-radius:14px;
+                  font-size:14px;
+                  letter-spacing:0.3px;
+                  box-shadow:0 6px 18px rgba(0,0,0,0.15);
+                ">
+                  💬 Consultar por WhatsApp
+                </a>
+              </div>
+
+              <h3 style="margin:18px 0 8px 0; font-size:14px; color:#111827;">Políticas de NR Tech</h3>
+              <div style="font-size:12px; color:#4b5563; line-height:1.55;">
+                • Aceptación de presupuesto: una vez aceptado, se autoriza la reparación.<br>
+                • Plazo de retiro: 30 días corridos desde la notificación de disponibilidad.<br>
+                • No retiro: vencido el plazo, NR Tech podrá disponer del dispositivo para recuperar costos (previa notificación).<br>
+                • Garantía: 30 días sobre mano de obra y repuestos utilizados (no cubre golpes, humedad o manipulación externa).<br>
+                • Datos: recomendamos respaldo previo; no nos responsabilizamos por pérdida de información.
+              </div>
+            </div>
+
+            <div style="background:#f9fafb; border-top:1px solid #e5e7eb; padding:12px 22px; font-size:11px; color:#6b7280; text-align:center;">
+              Este correo fue enviado automáticamente. Guardá tu número de orden para futuras consultas.
+            </div>
+
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+    msg = EmailMessage()
+    msg["Subject"] = asunto
+    msg["From"] = formataddr(("NR Tech – Tecnología en buenas manos", REMITENTE_EMAIL))
+    msg["To"] = destino
+
+    msg.set_content(
+        f"Hola {cliente}.\n\n"
+        f"Orden: {numero_orden}\n"
+        f"Equipo: {tipo} {marca} {modelo}\n"
+        f"Estado: {estado}\n"
+        f"Presupuesto: {presupuesto_mostrar}\n\n"
+        f"WhatsApp: {WHATSAPP_LINK}\n"
+        f"NR Tech"
+    )
+    msg.add_alternative(cuerpo_html, subtype="html")
+
+    if logo_cid and logo_path.exists():
+        ctype, _ = mimetypes.guess_type(str(logo_path))
+        if ctype is None:
+            ctype = "image/png"
+        maintype, subtype = ctype.split("/", 1)
+        with open(logo_path, "rb") as f:
+            img_data = f.read()
+        msg.get_payload()[1].add_related(img_data, maintype=maintype, subtype=subtype, cid=logo_cid)
+
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as smtp:
+            smtp.login(REMITENTE_EMAIL, CONTRASENA_APP)
+            smtp.send_message(msg)
+        print("Email enviado correctamente.")
+    except Exception as e:
+        print("Error al enviar email:", e)
 
 
 def init_db():
@@ -51,101 +166,6 @@ def init_db():
 
     con.commit()
     con.close()
-
-
-init_db()
-
-
-@app.route("/login", methods=["GET", "POST"])
-def login():
-
-    if request.method == "GET":
-        return """
-        <h3>Login NR Tech</h3>
-        <form method="post">
-        Usuario: <input name="user"><br>
-        Contraseña: <input name="pass" type="password"><br>
-        <button>Entrar</button>
-        </form>
-        """
-
-    user = request.form.get("user", "").strip()
-    password = request.form.get("pass", "").strip()
-
-    if user == USER and password == PASS:
-        session["login"] = True
-        return redirect("/")
-    else:
-        return "<p>Usuario o contraseña incorrectos</p><p><a href='/login'>Volver</a></p>"
-
-
-@app.get("/logout")
-def logout():
-    session.pop("login", None)
-    return redirect("/login")
-
-
-@app.get("/")
-def home():
-
-    if not session.get("login"):
-        return redirect("/login")
-
-    return """
-    <h2>NR Tech - Taller</h2>
-
-    <ul>
-    <li><a href="/crear">Crear orden</a></li>
-    <li><a href="/buscar">Buscar orden</a></li>
-    <li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
-    <li><a href="/logout">Salir</a></li>
-    </ul>
-    """
-
-
-@app.route("/crear", methods=["GET", "POST"])
-def crear():
-
-    if not session.get("login"):
-        return redirect("/login")
-
-    if request.method == "GET":
-        return """
-        <h3>Crear orden</h3>
-
-        <form method="post">
-
-        Nombre: <input name="nombre"><br>
-        Teléfono: <input name="telefono"><br>
-        Email: <input name="email"><br><br>
-
-        Tipo equipo: <input name="tipo"><br>
-        Marca: <input name="marca"><br>
-        Modelo: <input name="modelo"><br>
-        N° serie: <input name="numero_serie"><br>
-        IMEI: <input name="imei"><br>
-
-        Estado general: <input name="estado_general"><br>
-        Falla cliente: <input name="falla_cliente"><br>
-
-        <button type="submit">Guardar</button>
-
-        </form>
-
-        <p><a href="/">Volver</a></p>
-        """
-
-    nombre = request.form.get("nombre", "")
-    telefono = request.form.get("telefono", "")
-    email = request.form.get("email", "")
-    tipo = request.form.get("tipo", "")
-    marca = request.form.get("marca", "")
-    modelo = request.form.get("modelo", "")
-    numero_serie = request.form.get("numero_serie", "")
-    imei = request.form.get("imei", "")
-    estado_general = request.form.get("estado_general", "")
-    falla_cliente = request.form.get("falla_cliente", "")
-
     con = db()
     cur = con.cursor()
 
