@@ -61,24 +61,7 @@ def init_db():
 
     con.commit()
     con.close()
-
-
-def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto):
-    if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
-        print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
-        return
-
-    try:
-        pres = float(presupuesto or 0)
-    except:
-        pres = 0.0
-
-    presupuesto_mostrar = "En diagnóstico" if pres == 0 else f"${pres}"
-    asunto = f"Actualización de orden {numero_orden} – NR Tech"
-
-    logo_path = Path(__file__).with_name("logo_nrtech.png")
-    logo_cid = "logo_nrtech" if logo_path.exists() else None
-
+    
     cuerpo_html = f"""
     <html>
       <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
@@ -92,7 +75,7 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
 
             <div style="padding:18px 22px 10px 22px;">
               <p style="margin:0 0 12px 0; font-size:14px;">
-                Hola <strong>{cliente}</strong>, te informamos una actualización de tu orden:
+               Hola <strong>{cliente}</strong>, {saludo_texto}
               </p>
 
               <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:14px; padding:14px;">
@@ -312,7 +295,8 @@ def crear():
     con.commit()
     con.close()
 
-    print("Intentando enviar email a:", email)
+    print("Intentando enviar email de ingreso a:", email)
+
     enviar_email(
         destino=email,
         numero_orden=numero_orden,
@@ -321,7 +305,8 @@ def crear():
         marca=marca,
         modelo=modelo,
         estado="Recibido en taller",
-        presupuesto=0
+        presupuesto=0,
+        tipo_mensaje="ingreso"
     )
 
     return f"""
@@ -540,6 +525,8 @@ def actualizar():
     con.commit()
     con.close()
 
+    print("INFO UPDATE:", info)
+
     if info and info["email"]:
         print("Intentando enviar actualización a:", info["email"])
         enviar_email(
@@ -550,8 +537,11 @@ def actualizar():
             marca=info["marca"],
             modelo=info["modelo"],
             estado=info["estado"],
-            presupuesto=info["presupuesto"]
+            presupuesto=info["presupuesto"],
+            tipo_mensaje="actualizacion"
         )
+    else:
+        print("No se pudo enviar email de actualización: falta email o info.")
 
     return redirect(f"/buscar?q={numero}")
 
