@@ -212,7 +212,7 @@ def buscar():
             o.imei ILIKE %s OR
             o.numero_serie ILIKE %s
         ORDER BY o.id DESC
-    """, (f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%",f"%{q}%"))
+    """, (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"))
 
     resultados = cur.fetchall()
     con.close()
@@ -245,148 +245,12 @@ def buscar():
           <td>{equipo}</td>
           <td>{r['estado']}</td>
           <td>{pres}</td>
-          <td><a href="/buscar?numero={r['numero_orden']}">Ver</a></td>
+          <td><a href="/actualizar?numero={r['numero_orden']}">Actualizar</a></td>
         </tr>
         """
 
     html += "</table><p><a href='/'>Volver</a></p>"
-
-    return html        """
-
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-      SELECT o.numero_orden, c.nombre, c.telefono, c.email, o.tipo_equipo, o.marca, o.modelo,
-             o.estado, o.presupuesto, o.diagnostico_tecnico
-      FROM ordenes o
-      JOIN clientes c ON o.cliente_id=c.id
-      WHERE o.numero_orden=%s
-    """, (numero,))
-    r = cur.fetchone()
-    con.close()
-
-    if not r:
-        return f"<p>No encontrada: {numero}</p><p><a href='/buscar'>Volver</a></p>"
-
-    pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
-    return f"""
-    <h3>Orden {r['numero_orden']}</h3>
-    <p><b>Cliente:</b> {r['nombre']} ({r['telefono']}) - {r['email']}</p>
-    <p><b>Equipo:</b> {r['tipo_equipo']} {r['marca']} {r['modelo']}</p>
-    <p><b>Estado:</b> {r['estado']}</p>
-    <p><b>Presupuesto:</b> {pres}</p>
-    <p><b>Diagnóstico:</b> {r['diagnostico_tecnico']}</p>
-    <p><a href="/actualizar?numero={r['numero_orden']}">Actualizar</a></p>
-    <p><a href="/">Volver</a></p>
-    """
-
-
-@app.route("/actualizar", methods=["GET", "POST"])
-def actualizar():
-    if not session.get("login"):
-        return redirect("/login")
-
-    if request.method == "GET":
-        numero = request.args.get("numero", "").strip()
-        return f"""
-        <h3>Actualizar orden</h3>
-        <form method="post">
-          Número: <input name="numero" value="{numero}"><br>
-          Nuevo estado:
-<select name="estado">
-<option value="">-- elegir --</option>
-<option value="Recibido en taller">Recibido en taller</option>
-<option value="En diagnóstico">En diagnóstico</option>
-<option value="Esperando aprobación">Esperando aprobación</option>
-<option value="Esperando repuesto">Esperando repuesto</option>
-<option value="En reparación">En reparación</option>
-<option value="Listo para retirar">Listo para retirar</option>
-<option value="Entregado">Entregado</option>
-</select><br>
-          Nuevo diagnóstico: <input name="diag"><br>
-          Nuevo presupuesto: <input name="presupuesto"><br>
-          <button type="submit">Guardar</button>
-        </form>
-        <p><a href="/">Volver</a></p>
-        """
-
-    numero = request.form.get("numero", "").strip()
-    nuevo_estado = request.form.get("estado", "").strip()
-    nuevo_diag = request.form.get("diag", "").strip()
-    nuevo_pres = request.form.get("presupuesto", "").strip()
-
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("SELECT estado, diagnostico_tecnico, presupuesto FROM ordenes WHERE numero_orden=%s", (numero,))
-    old = cur.fetchone()
-    if not old:
-        con.close()
-        return f"<p>No encontrada: {numero}</p><p><a href='/actualizar'>Volver</a></p>"
-
-    if nuevo_estado:
-        cur.execute("UPDATE ordenes SET estado=%s WHERE numero_orden=%s", (nuevo_estado, numero))
-    if nuevo_diag:
-        cur.execute("UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s", (nuevo_diag, numero))
-    if nuevo_pres:
-        try:
-            p = float(nuevo_pres)
-        except:
-            p = 0.0
-        cur.execute("UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s", (p, numero))
-
-    con.commit()
-    con.close()
-    return redirect(f"/buscar?numero={numero}")
-
-@app.get("/ver_ordenes")
-def ver_ordenes():
-    if not session.get("login"):
-        return redirect("/login")
-
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("""
-        SELECT o.numero_orden, c.nombre, o.tipo_equipo, o.marca, o.modelo,
-               o.estado, o.presupuesto
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id = c.id
-        ORDER BY o.id DESC
-    """)
-    ordenes = cur.fetchall()
-    con.close()
-
-    html = """
-    <h2>Todas las órdenes</h2>
-    <p><a href="/">Volver al menú</a></p>
-    <table border="1" cellpadding="8" cellspacing="0">
-      <tr>
-        <th>Número</th>
-        <th>Cliente</th>
-        <th>Equipo</th>
-        <th>Estado</th>
-        <th>Presupuesto</th>
-        <th>Acción</th>
-      </tr>
-    """
-
-    for orden in ordenes:
-        presupuesto = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
-        equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
-
-        html += f"""
-        <tr>
-          <td>{orden['numero_orden']}</td>
-          <td>{orden['nombre']}</td>
-          <td>{equipo}</td>
-          <td>{orden['estado']}</td>
-          <td>{presupuesto}</td>
-          <td><a href="/actualizar?numero={orden['numero_orden']}">Actualizar</a></td>
-        </tr>
-        """
-
+    return html
     html += "</table>"
     return html
 
