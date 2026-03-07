@@ -181,6 +181,28 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
 
 init_db()
 
+@app.get("/reset_db")
+def reset_db():
+
+    if not session.get("login"):
+        return redirect("/login")
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("DROP TABLE IF EXISTS ordenes CASCADE;")
+    cur.execute("DROP TABLE IF EXISTS clientes CASCADE;")
+
+    con.commit()
+    con.close()
+
+    init_db()
+
+    return """
+    <h2>Base de datos reiniciada</h2>
+    <p>Las tablas fueron borradas y creadas nuevamente.</p>
+    <a href="/">Volver</a>
+    """
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
