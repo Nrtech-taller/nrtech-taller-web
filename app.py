@@ -87,13 +87,22 @@ def init_db():
     cur = con.cursor()
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS clientes (
-        id SERIAL PRIMARY KEY,
-        nombre TEXT,
-        telefono TEXT,
-        email TEXT UNIQUE
-    );
-    """)
+CREATE TABLE IF NOT EXISTS clientes (
+    id SERIAL PRIMARY KEY,
+    nombre TEXT,
+    telefono TEXT,
+    email TEXT,
+    direccion TEXT,
+    cedula TEXT,
+    notas TEXT,
+    fecha_alta TIMESTAMP DEFAULT NOW()
+);
+""")
+
+    cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS direccion TEXT;")
+    cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cedula TEXT;")
+    cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS notas TEXT;")
+    cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_alta TIMESTAMP DEFAULT NOW();")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS ordenes (
@@ -382,7 +391,63 @@ def home():
     if not session.get("login"):
         return redirect("/login")
 
-    contenido = """
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("""
+        SELECT estado, COUNT(*) as total
+        FROM ordenes
+        GROUP BY estado
+    """)
+    estados_raw = cur.fetchall()
+    con.close()
+
+    resumen = {
+        "Recibido en taller": 0,
+        "En diagnóstico": 0,
+        "Esperando aprobación": 0,
+        "Esperando repuesto": 0,
+        "En reparación": 0,
+        "Listo para retirar": 0,
+    }
+
+    for fila in estados_raw:
+        if fila["estado"] in resumen:
+            resumen[fila["estado"]] = fila["total"]
+
+    contenido = f"""
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px;">
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">Recibidos</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Recibido en taller", 0)}</p>
+      </div>
+
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">Diagnóstico</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("En diagnóstico", 0)}</p>
+      </div>
+
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">Esperando aprobación</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Esperando aprobación", 0)}</p>
+      </div>
+
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">Esperando repuesto</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Esperando repuesto", 0)}</p>
+      </div>
+
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">En reparación</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("En reparación", 0)}</p>
+      </div>
+
+      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+        <h3 style="margin:0 0 6px 0;">Listo para retirar</h3>
+        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Listo para retirar", 0)}</p>
+      </div>
+    </div>
+
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
       <a href="/crear" style="text-decoration:none; color:inherit;">
         <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
@@ -402,6 +467,13 @@ def home():
         <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
           <h3 style="margin:0 0 8px 0;">📋 Ver órdenes</h3>
           <p style="margin:0; color:#6b7280;">Ver todas las reparaciones registradas.</p>
+        </div>
+      </a>
+
+      <a href="/clientes" style="text-decoration:none; color:inherit;">
+        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+          <h3 style="margin:0 0 8px 0;">👤 Clientes</h3>
+          <p style="margin:0; color:#6b7280;">Ver fichas e historial de cada cliente.</p>
         </div>
       </a>
 
@@ -435,7 +507,16 @@ def crear():
               <input name="telefono" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
               <label>Email</label><br>
-              <input name="email" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:20px; border:1px solid #d1d5db; border-radius:10px;"><br>
+              <input name="email" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Dirección</label><br>
+              <input name="direccion" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Cédula</label><br>
+              <input name="cedula" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Notas cliente</label><br>
+              <input name="notas" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:20px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
               <label>Tipo equipo</label><br>
               <input name="tipo" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
@@ -468,6 +549,9 @@ def crear():
     nombre = request.form.get("nombre", "").strip()
     telefono = request.form.get("telefono", "").strip()
     email = request.form.get("email", "").strip()
+    direccion = request.form.get("direccion", "").strip()
+    cedula = request.form.get("cedula", "").strip()
+    notas = request.form.get("notas", "").strip()
     tipo = request.form.get("tipo", "").strip()
     marca = request.form.get("marca", "").strip()
     modelo = request.form.get("modelo", "").strip()
@@ -479,16 +563,37 @@ def crear():
     con = db()
     cur = con.cursor()
 
-    cur.execute("SELECT id FROM clientes WHERE email=%s", (email,))
-    row = cur.fetchone()
+    cliente_id = None
 
-    if row:
-        cliente_id = row["id"]
+    if telefono:
+        cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
+        row = cur.fetchone()
+        if row:
+            cliente_id = row["id"]
+
+    if not cliente_id and email:
+        cur.execute("SELECT id FROM clientes WHERE email=%s LIMIT 1", (email,))
+        row = cur.fetchone()
+        if row:
+            cliente_id = row["id"]
+
+    if cliente_id:
+        cur.execute("""
+            UPDATE clientes
+            SET nombre=%s,
+                telefono=%s,
+                email=%s,
+                direccion=%s,
+                cedula=%s,
+                notas=%s
+            WHERE id=%s
+        """, (nombre, telefono, email, direccion, cedula, notas, cliente_id))
     else:
-        cur.execute(
-            "INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",
-            (nombre, telefono, email),
-        )
+        cur.execute("""
+            INSERT INTO clientes(nombre, telefono, email, direccion, cedula, notas)
+            VALUES(%s,%s,%s,%s,%s,%s)
+            RETURNING id
+        """, (nombre, telefono, email, direccion, cedula, notas))
         cliente_id = cur.fetchone()["id"]
 
     token_aprobacion = secrets.token_urlsafe(32)
@@ -1110,6 +1215,136 @@ def confirmar_rechazo_presupuesto(token):
         """)
     )
 
+@app.get("/clientes")
+def clientes():
+    if not session.get("login"):
+        return redirect("/login")
+
+    q = request.args.get("q", "").strip()
+
+    con = db()
+    cur = con.cursor()
+
+    if q:
+        like = f"%{q}%"
+        cur.execute("""
+            SELECT *
+            FROM clientes
+            WHERE
+                COALESCE(nombre, '') ILIKE %s OR
+                COALESCE(telefono, '') ILIKE %s OR
+                COALESCE(email, '') ILIKE %s OR
+                COALESCE(cedula, '') ILIKE %s
+            ORDER BY id DESC
+        """, (like, like, like, like))
+    else:
+        cur.execute("SELECT * FROM clientes ORDER BY id DESC")
+
+    clientes = cur.fetchall()
+    con.close()
+
+    html = f"""
+    <h2 style="margin-top:0;">Clientes</h2>
+
+    <form method="get" style="margin-bottom:18px;">
+      <input name="q" value="{q}" placeholder="Buscar por nombre, teléfono, email o cédula"
+        style="width:100%; max-width:420px; padding:10px; border:1px solid #d1d5db; border-radius:10px;">
+      <button style="margin-left:8px; background:#2563eb; color:white; border:none; padding:11px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Buscar</button>
+    </form>
+    """
+
+    html += tabla_estilo_inicio() + """
+      <tr style="background:#eff6ff; text-align:left;">
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Nombre</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Teléfono</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Email</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Dirección</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
+      </tr>
+    """
+
+    for c in clientes:
+        html += f"""
+        <tr>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{c['nombre'] or '-'}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{c['telefono'] or '-'}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{c['email'] or '-'}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{c['direccion'] or '-'}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/cliente/{c['id']}" style="color:#2563eb; font-weight:bold;">Ver ficha</a>
+          </td>
+        </tr>
+        """
+
+    html += tabla_estilo_fin()
+    html += "<p style='margin-top:18px;'><a href='/' style='color:#2563eb; font-weight:bold;'>Volver</a></p>"
+
+    return html_layout("Clientes", card_html(html))
+@app.get("/cliente/<int:id>")
+def ver_cliente(id):
+    if not session.get("login"):
+        return redirect("/login")
+
+    con = db()
+    cur = con.cursor()
+
+    cur.execute("SELECT * FROM clientes WHERE id=%s", (id,))
+    cliente = cur.fetchone()
+
+    if not cliente:
+        con.close()
+        return html_layout("No encontrado", card_html("<h2 style='margin-top:0;'>Cliente no encontrado</h2>"))
+
+    cur.execute("""
+        SELECT numero_orden, tipo_equipo, marca, modelo, estado, presupuesto
+        FROM ordenes
+        WHERE cliente_id=%s
+        ORDER BY id DESC
+    """, (id,))
+    ordenes = cur.fetchall()
+    con.close()
+
+    html = f"""
+    <h2 style="margin-top:0;">Ficha del cliente</h2>
+    <p><strong>Nombre:</strong> {cliente['nombre'] or '-'}</p>
+    <p><strong>Teléfono:</strong> {cliente['telefono'] or '-'}</p>
+    <p><strong>Email:</strong> {cliente['email'] or '-'}</p>
+    <p><strong>Dirección:</strong> {cliente['direccion'] or '-'}</p>
+    <p><strong>Cédula:</strong> {cliente['cedula'] or '-'}</p>
+    <p><strong>Notas:</strong> {cliente['notas'] or '-'}</p>
+
+    <h3 style="margin-top:26px;">Historial de órdenes</h3>
+    """
+
+    html += tabla_estilo_inicio() + """
+      <tr style="background:#eff6ff; text-align:left;">
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Número</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
+      </tr>
+    """
+
+    for o in ordenes:
+        equipo = f"{o['tipo_equipo'] or ''} {o['marca'] or ''} {o['modelo'] or ''}"
+        pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
+        html += f"""
+        <tr>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['numero_orden']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['estado']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold;">Ver / actualizar</a>
+          </td>
+        </tr>
+        """
+
+    html += tabla_estilo_fin()
+    html += "<p style='margin-top:18px;'><a href='/clientes' style='color:#2563eb; font-weight:bold;'>Volver a clientes</a></p>"
+
+    return html_layout("Ficha cliente", card_html(html))
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
