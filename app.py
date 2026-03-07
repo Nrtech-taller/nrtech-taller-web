@@ -1,14 +1,10 @@
-from flask import Flask, request, redirect, session
+from flask import Flask, request, redirect, session, render_template_string, url_for
 import os
 import psycopg
 from psycopg.rows import dict_row
 import smtplib
-import mimetypes
-from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formataddr
-import datetime
-import secrets
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
@@ -19,7 +15,7 @@ PASS = "N41043406@"
 REMITENTE_EMAIL = os.environ.get("GMAIL_USER")
 CONTRASENA_APP = os.environ.get("GMAIL_APP_PASSWORD")
 WHATSAPP_LINK = "https://wa.me/59898705065"
-BASE_URL = os.environ.get("BASE_URL")
+BASE_URL = os.environ.get("BASE_URL", "").rstrip("/")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
 
@@ -27,1090 +23,895 @@ def db():
     return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
 
 
-def estado_presupuesto_badge(estado):
-    if estado == "Aprobado":
-        return "<span style='color:white;background:#16a34a;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Aceptado</span>"
-    elif estado == "Rechazado":
-        return "<span style='color:white;background:#dc2626;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Rechazado</span>"
-    elif estado == "Esperando aprobación":
-        return "<span style='color:white;background:#f59e0b;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>En espera</span>"
-    return "<span style='color:#6b7280;'>-</span>"
-
-
-def html_layout(titulo, contenido):
-    return f"""
-    <html>
-      <head>
-        <meta charset="utf-8">
-        <title>{titulo}</title>
-      </head>
-      <body style="margin:0; font-family:Arial, sans-serif; background:#f3f6fb; color:#111827;">
-        <div style="max-width:1100px; margin:0 auto; padding:24px;">
-          <div style="background:linear-gradient(135deg,#0f172a,#1d4ed8); color:white; border-radius:18px; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.12);">
-            <h1 style="margin:0; font-size:28px;">NR Tech</h1>
-            <p style="margin:8px 0 0 0; opacity:0.92;">Sistema de gestión de reparaciones</p>
-          </div>
-
-          <div style="margin-top:18px;">
-            {contenido}
-          </div>
-        </div>
-      </body>
-    </html>
-    """
-
-
-def card_html(contenido):
-    return f"""
-    <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-      {contenido}
-    </div>
-    """
-
-
-def tabla_estilo_inicio():
-    return """
-    <div style="overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; background:white; border-radius:16px; overflow:hidden;">
-    """
-
-
-def tabla_estilo_fin():
-    return """
-      </table>
-    </div>
-    """
-
-
 def init_db():
     con = db()
     cur = con.cursor()
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS clientes (
-        id SERIAL PRIMARY KEY,
-        nombre TEXT,
-        telefono TEXT,
-        email TEXT UNIQUE
-    );
+        CREATE TABLE IF NOT EXISTS clientes (
+            id SERIAL PRIMARY KEY,
+            nombre TEXT NOT NULL,
+            telefono TEXT,
+            email TEXT,
+            direccion TEXT,
+            cedula TEXT,
+            notas TEXT,
+            fecha_alta TIMESTAMP DEFAULT NOW()
+        );
     """)
 
     cur.execute("""
-    CREATE TABLE IF NOT EXISTS ordenes (
-        id SERIAL PRIMARY KEY,
-        numero_orden TEXT UNIQUE,
-        cliente_id INTEGER REFERENCES clientes(id),
-        tipo_equipo TEXT,
-        marca TEXT,
-        modelo TEXT,
-        numero_serie TEXT,
-        imei TEXT,
-        estado_general TEXT,
-        falla_cliente TEXT,
-        diagnostico_tecnico TEXT,
-        fecha_ingreso DATE,
-        estado TEXT,
-        presupuesto NUMERIC DEFAULT 0,
-        observaciones TEXT,
-        token_aprobacion TEXT,
-        presupuesto_aprobado BOOLEAN DEFAULT FALSE,
-        fecha_aprobacion TIMESTAMP,
-        presupuesto_rechazado BOOLEAN DEFAULT FALSE,
-        fecha_rechazo TIMESTAMP
-    );
+        CREATE TABLE IF NOT EXISTS ordenes (
+            id SERIAL PRIMARY KEY,
+            numero_orden TEXT UNIQUE,
+            cliente_id INTEGER REFERENCES clientes(id),
+            tipo_equipo TEXT,
+            marca TEXT,
+            modelo TEXT,
+            imei_serie TEXT,
+            falla TEXT,
+            observaciones TEXT,
+            presupuesto NUMERIC(10,2),
+            estado TEXT DEFAULT 'recibido',
+            cerrado BOOLEAN DEFAULT FALSE,
+            fecha_ingreso TIMESTAMP DEFAULT NOW(),
+            fecha_actualizacion TIMESTAMP DEFAULT NOW(),
+            fecha_entrega TIMESTAMP
+        );
     """)
 
-    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS token_aprobacion TEXT;")
-    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS presupuesto_aprobado BOOLEAN DEFAULT FALSE;")
-    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_aprobacion TIMESTAMP;")
-    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS presupuesto_rechazado BOOLEAN DEFAULT FALSE;")
-    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_rechazo TIMESTAMP;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS numero_orden TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS cliente_id INTEGER REFERENCES clientes(id);")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS tipo_equipo TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS marca TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS modelo TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS imei_serie TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS falla TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS observaciones TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS presupuesto NUMERIC(10,2);")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS estado TEXT DEFAULT 'recibido';")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS cerrado BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_ingreso TIMESTAMP DEFAULT NOW();")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_actualizacion TIMESTAMP DEFAULT NOW();")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_entrega TIMESTAMP;")
+
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM pg_indexes
+                WHERE indexname = 'idx_ordenes_numero_orden'
+            ) THEN
+                CREATE INDEX idx_ordenes_numero_orden ON ordenes(numero_orden);
+            END IF;
+        END$$;
+    """)
 
     con.commit()
     con.close()
 
 
-def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto,
-                 tipo_mensaje="actualizacion", token_aprobacion=None,
-                 presupuesto_aprobado=False, presupuesto_rechazado=False):
-    if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
-        print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
-        return
+def login_required():
+    return session.get("logged_in") is True
+
+
+def generar_numero_orden():
+    con = db()
+    cur = con.cursor()
+    cur.execute("SELECT COALESCE(MAX(id), 0) + 1 AS siguiente FROM ordenes")
+    siguiente = cur.fetchone()["siguiente"]
+    con.close()
+    return f"NR-{siguiente:05d}"
+
+
+def color_estado(estado):
+    colores = {
+        "recibido": "#6c757d",
+        "diagnostico": "#0dcaf0",
+        "esperando_aprobacion": "#fd7e14",
+        "esperando_repuesto": "#ffc107",
+        "en_reparacion": "#0d6efd",
+        "listo_para_retirar": "#198754",
+        "entregado": "#212529",
+        "cancelado": "#dc3545",
+        "presupuesto_aceptado": "#198754",
+        "presupuesto_rechazado": "#dc3545",
+    }
+    return colores.get(estado, "#6c757d")
+
+
+def enviar_email(destino, asunto, html):
+    if not REMITENTE_EMAIL or not CONTRASENA_APP or not destino:
+        return False, "Faltan variables de mail o destino"
 
     try:
-        pres = float(presupuesto or 0)
-    except Exception:
-        pres = 0.0
+        msg = EmailMessage()
+        msg["Subject"] = asunto
+        msg["From"] = formataddr(("NR Tech", REMITENTE_EMAIL))
+        msg["To"] = destino
+        msg.set_content("Tu cliente de correo no soporta HTML.")
+        msg.add_alternative(html, subtype="html")
 
-    presupuesto_mostrar = "En diagnóstico" if pres == 0 else f"${pres}"
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
+            smtp.login(REMITENTE_EMAIL, CONTRASENA_APP)
+            smtp.send_message(msg)
 
-    if tipo_mensaje == "ingreso":
-        asunto = f"Ingreso de orden {numero_orden} – NR Tech"
-        saludo_texto = "te confirmamos el ingreso de tu equipo al taller:"
-    else:
-        asunto = f"Actualización de orden {numero_orden} – NR Tech"
-        saludo_texto = "te informamos una actualización de tu orden:"
+        return True, "Mail enviado"
+    except Exception as e:
+        return False, str(e)
 
-    logo_path = Path(__file__).with_name("logo_nrtech.png")
-    logo_cid = "logo_nrtech" if logo_path.exists() else None
 
-    botones_presupuesto_html = ""
-    texto_presupuesto = ""
+def enviar_mail_presupuesto(orden_id):
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT o.*, c.nombre, c.email, c.telefono
+        FROM ordenes o
+        JOIN clientes c ON c.id = o.cliente_id
+        WHERE o.id = %s
+    """, (orden_id,))
+    orden = cur.fetchone()
+    con.close()
 
-    if (
-        estado == "Esperando aprobación"
-        and not presupuesto_aprobado
-        and not presupuesto_rechazado
-        and token_aprobacion
-        and BASE_URL
-        and pres > 0
-    ):
-        link_aprobacion = f"{BASE_URL}/aceptar_presupuesto/{token_aprobacion}"
-        link_rechazo = f"{BASE_URL}/rechazar_presupuesto/{token_aprobacion}"
+    if not orden or not orden["email"]:
+        return False, "El cliente no tiene email"
 
-        botones_presupuesto_html = f"""
-        <div style="text-align:center; margin-top:16px;">
-          <a href="{link_aprobacion}" style="
-            display:inline-block;
-            background:#16a34a;
-            color:#ffffff;
-            text-decoration:none;
-            font-weight:700;
-            padding:14px 22px;
-            border-radius:14px;
-            font-size:14px;
-            letter-spacing:0.3px;
-            box-shadow:0 6px 18px rgba(22,163,74,0.25);
-            margin-right:8px;
-          ">
-            ✅ Aceptar presupuesto
-          </a>
+    aceptar_url = f"{BASE_URL}/presupuesto/aceptar/{orden_id}" if BASE_URL else "#"
+    rechazar_url = f"{BASE_URL}/presupuesto/rechazar/{orden_id}" if BASE_URL else "#"
 
-          <a href="{link_rechazo}" style="
-            display:inline-block;
-            background:#dc2626;
-            color:#ffffff;
-            text-decoration:none;
-            font-weight:700;
-            padding:14px 22px;
-            border-radius:14px;
-            font-size:14px;
-            letter-spacing:0.3px;
-            box-shadow:0 6px 18px rgba(220,38,38,0.25);
-            margin-left:8px;
-          ">
-            ❌ Rechazar presupuesto
-          </a>
-        </div>
-        <p style="margin-top:10px; font-size:12px; color:#6b7280; text-align:center;">
-          Al tocar un botón no se confirma automáticamente. Primero se mostrará una confirmación final.
-        </p>
-        """
-
-        texto_presupuesto = (
-            f"\nAceptar presupuesto: {link_aprobacion}\n"
-            f"Rechazar presupuesto: {link_rechazo}\n"
-        )
-
-    cuerpo_html = f"""
+    html = f"""
     <html>
-      <body style="margin:0; padding:0; background:#f6f8fb; font-family: Arial, sans-serif; color:#111827;">
-        <div style="max-width:720px; margin:0 auto; padding:22px;">
-          <div style="background:#ffffff; border:1px solid #e5e7eb; border-radius:16px; overflow:hidden; box-shadow:0 10px 30px rgba(17,24,39,0.08);">
+    <body style="font-family: Arial, sans-serif; background:#f5f5f5; padding:20px;">
+        <div style="max-width:700px; margin:auto; background:white; padding:30px; border-radius:12px;">
+            <h2 style="color:#0d6efd; margin-top:0;">NR Tech - Presupuesto</h2>
+            <p>Hola <b>{orden["nombre"]}</b>,</p>
+            <p>Te enviamos el presupuesto de tu equipo.</p>
 
-            <div style="background:linear-gradient(135deg,#38bdf8,#3b82f6); padding:40px 22px; text-align:center;">
-              {("<img src='cid:logo_nrtech' alt='NR Tech' style='max-height:180px; width:auto; display:block; margin:0 auto;' />" if logo_cid else "")}
-              <div style="width:60px; height:3px; background:rgba(255,255,255,0.6); margin:18px auto 0 auto; border-radius:10px;"></div>
-            </div>
+            <table style="width:100%; border-collapse: collapse; margin:20px 0;">
+                <tr><td><b>Número de orden:</b></td><td>{orden["numero_orden"] or ""}</td></tr>
+                <tr><td><b>Equipo:</b></td><td>{orden["tipo_equipo"] or ""} {orden["marca"] or ""} {orden["modelo"] or ""}</td></tr>
+                <tr><td><b>IMEI / Serie:</b></td><td>{orden["imei_serie"] or ""}</td></tr>
+                <tr><td><b>Falla:</b></td><td>{orden["falla"] or ""}</td></tr>
+                <tr><td><b>Presupuesto:</b></td><td><b>USD {orden["presupuesto"] or 0}</b></td></tr>
+            </table>
 
-            <div style="padding:18px 22px 10px 22px;">
-              <p style="margin:0 0 12px 0; font-size:14px;">
-                Hola <strong>{cliente}</strong>, {saludo_texto}
-              </p>
+            <p>Podés responder desde estos botones:</p>
 
-              <div style="background:#f9fafb; border:1px solid #e5e7eb; border-radius:14px; padding:14px;">
-                <div style="margin:6px 0; font-size:13px;"><strong>N° de orden:</strong> <span style="color:#2563eb;">{numero_orden}</span></div>
-                <div style="margin:6px 0; font-size:13px;"><strong>Equipo:</strong> {tipo} {marca} {modelo}</div>
-                <div style="margin:6px 0; font-size:13px;"><strong>Estado:</strong> <span style="color:#16a34a;">{estado}</span></div>
-                <div style="margin:6px 0; font-size:13px;"><strong>Presupuesto:</strong> <span style="color:#b45309;">{presupuesto_mostrar}</span></div>
-              </div>
-
-              {botones_presupuesto_html}
-
-              <div style="text-align:center; margin-top:18px;">
-                <a href="{WHATSAPP_LINK}" style="
-                  display:inline-block;
-                  background:#111827;
-                  color:#ffffff;
-                  text-decoration:none;
-                  font-weight:600;
-                  padding:14px 22px;
-                  border-radius:14px;
-                  font-size:14px;
-                  letter-spacing:0.3px;
-                  box-shadow:0 6px 18px rgba(0,0,0,0.15);
-                ">
-                  💬 Consultar por WhatsApp
+            <div style="margin:25px 0;">
+                <a href="{aceptar_url}" style="background:#198754; color:white; text-decoration:none; padding:12px 20px; border-radius:8px; margin-right:10px; display:inline-block;">
+                    Aceptar presupuesto
                 </a>
-              </div>
 
-              <h3 style="margin:18px 0 8px 0; font-size:14px; color:#111827;">Políticas de NR Tech</h3>
-              <div style="font-size:12px; color:#4b5563; line-height:1.55;">
-                • Aceptación de presupuesto: una vez aceptado, se autoriza la reparación.<br>
-                • Plazo de retiro: 30 días corridos desde la notificación de disponibilidad.<br>
-                • No retiro: vencido el plazo, NR Tech podrá disponer del dispositivo para recuperar costos (previa notificación).<br>
-                • Garantía: 30 días sobre mano de obra y repuestos utilizados (no cubre golpes, humedad o manipulación externa).<br>
-                • Datos: recomendamos respaldo previo; no nos responsabilizamos por pérdida de información.
-              </div>
+                <a href="{rechazar_url}" style="background:#dc3545; color:white; text-decoration:none; padding:12px 20px; border-radius:8px; display:inline-block;">
+                    Rechazar presupuesto
+                </a>
             </div>
 
-            <div style="background:#f9fafb; border-top:1px solid #e5e7eb; padding:12px 22px; font-size:11px; color:#6b7280; text-align:center;">
-              Este correo fue enviado automáticamente. Guardá tu número de orden para futuras consultas.
-            </div>
+            <p>También podés escribirnos por WhatsApp:</p>
+            <p><a href="{WHATSAPP_LINK}">{WHATSAPP_LINK}</a></p>
 
-          </div>
+            <hr>
+            <p style="color:#666; font-size:12px;">NR Tech - Tecnología en buenas manos</p>
         </div>
-      </body>
+    </body>
     </html>
     """
 
-    msg = EmailMessage()
-    msg["Subject"] = asunto
-    msg["From"] = formataddr(("NR Tech – Tecnología en buenas manos", REMITENTE_EMAIL))
-    msg["To"] = destino
-
-    msg.set_content(
-        f"Hola {cliente}.\n\n"
-        f"Orden: {numero_orden}\n"
-        f"Equipo: {tipo} {marca} {modelo}\n"
-        f"Estado: {estado}\n"
-        f"Presupuesto: {presupuesto_mostrar}\n"
-        f"{texto_presupuesto}\n"
-        f"WhatsApp: {WHATSAPP_LINK}\n"
-        f"NR Tech"
-    )
-    msg.add_alternative(cuerpo_html, subtype="html")
-
-    if logo_cid and logo_path.exists():
-        ctype, _ = mimetypes.guess_type(str(logo_path))
-        if ctype is None:
-            ctype = "image/png"
-        maintype, subtype = ctype.split("/", 1)
-        with open(logo_path, "rb") as f:
-            img_data = f.read()
-        msg.get_payload()[1].add_related(img_data, maintype=maintype, subtype=subtype, cid=logo_cid)
-
-    try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as smtp:
-            smtp.login(REMITENTE_EMAIL, CONTRASENA_APP)
-            smtp.send_message(msg)
-        print("Email enviado correctamente.")
-    except Exception as e:
-        print("Error al enviar email:", e)
-
-
-init_db()
-
-
-@app.get("/reset_db")
-def reset_db():
-    if not session.get("login"):
-        return redirect("/login")
-
-    con = db()
-    cur = con.cursor()
-    cur.execute("DROP TABLE IF EXISTS ordenes CASCADE;")
-    cur.execute("DROP TABLE IF EXISTS clientes CASCADE;")
-    con.commit()
-    con.close()
-
-    init_db()
-
-    return html_layout(
-        "Base reiniciada",
-        card_html("""
-        <h2 style="margin-top:0;">Base de datos reiniciada</h2>
-        <p>Las tablas fueron borradas y creadas nuevamente.</p>
-        <p><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-        """)
-    )
+    return enviar_email(orden["email"], f"Presupuesto {orden['numero_orden']} - NR Tech", html)
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == "GET":
-        return html_layout(
-            "Login",
-            card_html("""
-            <h2 style="margin-top:0;">Login NR Tech</h2>
+    error = ""
+    if request.method == "POST":
+        user = request.form.get("username", "")
+        password = request.form.get("password", "")
+        if user == USER and password == PASS:
+            session["logged_in"] = True
+            return redirect("/")
+        error = "Usuario o contraseña incorrectos"
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Login - NR Tech</title>
+        <style>
+            body { font-family: Arial; background:#f4f4f4; padding:40px; }
+            .box { max-width:400px; margin:auto; background:white; padding:25px; border-radius:12px; }
+            input { width:100%; padding:10px; margin:8px 0; }
+            button { width:100%; padding:12px; background:#0d6efd; color:white; border:none; border-radius:8px; }
+            .error { color:red; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Ingreso NR Tech</h2>
+            {% if error %}<p class="error">{{ error }}</p>{% endif %}
             <form method="post">
-              <label>Usuario</label><br>
-              <input name="user" style="width:100%; max-width:360px; padding:10px; margin-top:6px; margin-bottom:14px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Contraseña</label><br>
-              <input name="pass" type="password" style="width:100%; max-width:360px; padding:10px; margin-top:6px; margin-bottom:14px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <button style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Entrar</button>
+                <input type="text" name="username" placeholder="Usuario" required>
+                <input type="password" name="password" placeholder="Contraseña" required>
+                <button type="submit">Entrar</button>
             </form>
-            """)
-        )
-
-    user = request.form.get("user", "").strip()
-    password = request.form.get("pass", "").strip()
-
-    if user == USER and password == PASS:
-        session["login"] = True
-        return redirect("/")
-
-    return html_layout(
-        "Login",
-        card_html("""
-        <h2 style="margin-top:0;">Usuario o contraseña incorrectos</h2>
-        <p><a href="/login" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-        """)
-    )
+        </div>
+    </body>
+    </html>
+    """, error=error)
 
 
-@app.get("/logout")
+@app.route("/logout")
 def logout():
-    session.pop("login", None)
+    session.clear()
     return redirect("/login")
 
 
-@app.get("/")
-def home():
-    if not session.get("login"):
-        return redirect("/login")
-
-    contenido = """
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
-      <a href="/crear" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">➕ Crear orden</h3>
-          <p style="margin:0; color:#6b7280;">Registrar un nuevo equipo en el taller.</p>
-        </div>
-      </a>
-
-      <a href="/buscar" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">🔎 Buscar orden</h3>
-          <p style="margin:0; color:#6b7280;">Buscar por número, nombre, email, IMEI o serie.</p>
-        </div>
-      </a>
-
-      <a href="/ver_ordenes" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">📋 Ver órdenes</h3>
-          <p style="margin:0; color:#6b7280;">Ver todas las reparaciones registradas.</p>
-        </div>
-      </a>
-
-      <a href="/logout" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">🚪 Salir</h3>
-          <p style="margin:0; color:#6b7280;">Cerrar sesión del sistema.</p>
-        </div>
-      </a>
-    </div>
-    """
-
-    return html_layout("Inicio", contenido)
-
-
-@app.route("/crear", methods=["GET", "POST"])
-def crear():
-    if not session.get("login"):
-        return redirect("/login")
-
-    if request.method == "GET":
-        return html_layout(
-            "Crear orden",
-            card_html("""
-            <h2 style="margin-top:0;">Crear orden</h2>
-            <form method="post">
-              <label>Nombre</label><br>
-              <input name="nombre" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Teléfono</label><br>
-              <input name="telefono" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Email</label><br>
-              <input name="email" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:20px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Tipo equipo</label><br>
-              <input name="tipo" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Marca</label><br>
-              <input name="marca" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Modelo</label><br>
-              <input name="modelo" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>N° serie</label><br>
-              <input name="numero_serie" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>IMEI</label><br>
-              <input name="imei" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Estado general</label><br>
-              <input name="estado_general" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Falla cliente</label><br>
-              <input name="falla_cliente" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:18px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <button type="submit" style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar</button>
-            </form>
-
-            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-            """)
-        )
-
-    nombre = request.form.get("nombre", "").strip()
-    telefono = request.form.get("telefono", "").strip()
-    email = request.form.get("email", "").strip()
-    tipo = request.form.get("tipo", "").strip()
-    marca = request.form.get("marca", "").strip()
-    modelo = request.form.get("modelo", "").strip()
-    numero_serie = request.form.get("numero_serie", "").strip()
-    imei = request.form.get("imei", "").strip()
-    estado_general = request.form.get("estado_general", "").strip()
-    falla_cliente = request.form.get("falla_cliente", "").strip()
-
-    con = db()
-    cur = con.cursor()
-
-    cur.execute("SELECT id FROM clientes WHERE email=%s", (email,))
-    row = cur.fetchone()
-
-    if row:
-        cliente_id = row["id"]
-    else:
-        cur.execute(
-            "INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",
-            (nombre, telefono, email),
-        )
-        cliente_id = cur.fetchone()["id"]
-
-    token_aprobacion = secrets.token_urlsafe(32)
-
-    cur.execute(
-        """
-        INSERT INTO ordenes(
-            numero_orden, cliente_id, tipo_equipo, marca, modelo, numero_serie, imei,
-            estado_general, falla_cliente, diagnostico_tecnico, fecha_ingreso, estado,
-            presupuesto, observaciones, token_aprobacion, presupuesto_aprobado,
-            fecha_aprobacion, presupuesto_rechazado, fecha_rechazo
-        )
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_DATE,%s,%s,%s,%s,%s,%s,%s,%s)
-        RETURNING id
-        """,
-        (
-            "",
-            cliente_id,
-            tipo,
-            marca,
-            modelo,
-            numero_serie,
-            imei,
-            estado_general,
-            falla_cliente,
-            "",
-            "Recibido en taller",
-            0,
-            "",
-            token_aprobacion,
-            False,
-            None,
-            False,
-            None,
-        ),
-    )
-
-    oid = cur.fetchone()["id"]
-    anio = datetime.datetime.now().year
-    numero_orden = f"NR-{anio}-{oid:04d}"
-
-    cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s", (numero_orden, oid))
-    con.commit()
-    con.close()
-
-    enviar_email(
-        destino=email,
-        numero_orden=numero_orden,
-        cliente=nombre,
-        tipo=tipo,
-        marca=marca,
-        modelo=modelo,
-        estado="Recibido en taller",
-        presupuesto=0,
-        tipo_mensaje="ingreso",
-        token_aprobacion=token_aprobacion,
-        presupuesto_aprobado=False,
-        presupuesto_rechazado=False
-    )
-
-    return html_layout(
-        "Orden creada",
-        card_html(f"""
-        <h2 style="margin-top:0;">Orden creada correctamente</h2>
-        <p><strong>Número:</strong> {numero_orden}</p>
-        <p><a href="/buscar?q={numero_orden}" style="color:#2563eb; font-weight:bold;">Ver orden</a></p>
-        <p><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-        """)
-    )
-
-
-@app.get("/buscar")
-def buscar():
-    if not session.get("login"):
+@app.route("/")
+def index():
+    if not login_required():
         return redirect("/login")
 
     q = request.args.get("q", "").strip()
 
-    if not q:
-        return html_layout(
-            "Buscar orden",
-            card_html("""
-            <h2 style="margin-top:0;">Buscar orden</h2>
-            <form>
-              <p style="margin-top:0; color:#6b7280;">Buscar por número, nombre, teléfono, email, IMEI o serie</p>
-              <input name="q" style="width:100%; max-width:420px; padding:10px; border:1px solid #d1d5db; border-radius:10px;">
-              <button style="margin-left:8px; background:#2563eb; color:white; border:none; padding:11px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Buscar</button>
-            </form>
-            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-            """)
-        )
-
     con = db()
     cur = con.cursor()
 
-    cur.execute(
-        """
-        SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-               o.estado,o.presupuesto
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id=c.id
-        WHERE
-            o.numero_orden ILIKE %s OR
-            c.nombre ILIKE %s OR
-            c.telefono ILIKE %s OR
-            c.email ILIKE %s OR
-            o.imei ILIKE %s OR
-            o.numero_serie ILIKE %s
-        """,
-        (f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%", f"%{q}%"),
-    )
+    if q:
+        like = f"%{q}%"
+        cur.execute("""
+            SELECT o.*, c.nombre, c.telefono, c.email
+            FROM ordenes o
+            JOIN clientes c ON c.id = o.cliente_id
+            WHERE
+                COALESCE(o.numero_orden, '') ILIKE %s OR
+                COALESCE(c.nombre, '') ILIKE %s OR
+                COALESCE(c.telefono, '') ILIKE %s OR
+                COALESCE(o.imei_serie, '') ILIKE %s
+            ORDER BY o.id DESC
+        """, (like, like, like, like))
+    else:
+        cur.execute("""
+            SELECT o.*, c.nombre, c.telefono, c.email
+            FROM ordenes o
+            JOIN clientes c ON c.id = o.cliente_id
+            ORDER BY o.id DESC
+        """)
 
-    resultados = cur.fetchall()
+    ordenes = cur.fetchall()
+
+    cur.execute("""
+        SELECT estado, COUNT(*) as total
+        FROM ordenes
+        WHERE cerrado = FALSE
+        GROUP BY estado
+    """)
+    estados_raw = cur.fetchall()
     con.close()
 
-    if not resultados:
-        return html_layout(
-            "Sin resultados",
-            card_html("""
-            <h2 style="margin-top:0;">Sin resultados</h2>
-            <p>No se encontró ninguna orden con esa búsqueda.</p>
-            <p><a href="/buscar" style="color:#2563eb; font-weight:bold;">Volver a buscar</a></p>
-            """)
-        )
+    resumen = {
+        "esperando_aprobacion": 0,
+        "esperando_repuesto": 0,
+        "en_reparacion": 0,
+        "listo_para_retirar": 0,
+        "diagnostico": 0,
+        "recibido": 0,
+    }
 
-    html = """
-    <h2 style="margin-top:0;">Resultados</h2>
-    """ + tabla_estilo_inicio() + """
-      <tr style="background:#eff6ff; text-align:left;">
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Número</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Cliente</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
-      </tr>
-    """
+    for fila in estados_raw:
+        resumen[fila["estado"]] = fila["total"]
 
-    for r in resultados:
-        equipo = f"{r['tipo_equipo']} {r['marca']} {r['modelo']}"
-        pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
-        badge = estado_presupuesto_badge(r["estado"])
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>NR Tech - Taller</title>
+        <style>
+            body { font-family: Arial; background:#f5f5f5; margin:0; padding:20px; }
+            .topbar { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+            .btn { padding:8px 12px; border:none; border-radius:8px; text-decoration:none; color:white; background:#0d6efd; display:inline-block; }
+            .btn-dark { background:#212529; }
+            .btn-green { background:#198754; }
+            .btn-orange { background:#fd7e14; }
+            .btn-red { background:#dc3545; }
+            .btn-yellow { background:#d39e00; }
+            .cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px; }
+            .card { background:white; padding:16px; border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,.08); }
+            .search { background:white; padding:15px; border-radius:12px; margin-bottom:20px; }
+            table { width:100%; border-collapse:collapse; background:white; border-radius:12px; overflow:hidden; }
+            th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; font-size:14px; vertical-align:top; }
+            th { background:#111; color:white; }
+            .badge { color:white; padding:6px 10px; border-radius:999px; font-size:12px; font-weight:bold; display:inline-block; }
+            .acciones a { margin:2px; }
+            input, select, textarea { width:100%; padding:10px; margin:6px 0 12px; border:1px solid #ddd; border-radius:8px; }
+            .small { font-size:12px; color:#666; }
+        </style>
+    </head>
+    <body>
+        <div class="topbar">
+            <div>
+                <h1 style="margin:0;">NR Tech - Taller</h1>
+                <div class="small">Tecnología en buenas manos</div>
+            </div>
+            <div>
+                <a class="btn" href="/nueva">Nueva orden</a>
+                <a class="btn btn-dark" href="/clientes">Clientes</a>
+                <a class="btn btn-red" href="/logout">Salir</a>
+            </div>
+        </div>
 
-        html += f"""
-        <tr>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['numero_orden']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['nombre']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['estado']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
-            <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
-          </td>
-        </tr>
-        """
+        <div class="cards">
+            <div class="card"><b>Recibidos</b><br>{{ resumen.get('recibido', 0) }}</div>
+            <div class="card"><b>Diagnóstico</b><br>{{ resumen.get('diagnostico', 0) }}</div>
+            <div class="card"><b>Esperando aprobación</b><br>{{ resumen.get('esperando_aprobacion', 0) }}</div>
+            <div class="card"><b>Esperando repuesto</b><br>{{ resumen.get('esperando_repuesto', 0) }}</div>
+            <div class="card"><b>En reparación</b><br>{{ resumen.get('en_reparacion', 0) }}</div>
+            <div class="card"><b>Listo para retirar</b><br>{{ resumen.get('listo_para_retirar', 0) }}</div>
+        </div>
 
-    html += tabla_estilo_fin()
-    html += "<p style='margin-top:18px;'><a href='/' style='color:#2563eb; font-weight:bold;'>Volver</a></p>"
+        <div class="search">
+            <form method="get">
+                <input type="text" name="q" placeholder="Buscar por nombre, número de orden, teléfono o IMEI" value="{{ q }}">
+                <button class="btn" type="submit">Buscar</button>
+                <a class="btn btn-dark" href="/">Limpiar</a>
+            </form>
+        </div>
 
-    return html_layout("Resultados", card_html(html))
+        <table>
+            <tr>
+                <th>Orden</th>
+                <th>Cliente</th>
+                <th>Equipo</th>
+                <th>Falla</th>
+                <th>Presupuesto</th>
+                <th>Estado</th>
+                <th>Acciones</th>
+            </tr>
+            {% for o in ordenes %}
+            <tr>
+                <td>
+                    <b>{{ o.numero_orden or "-" }}</b><br>
+                    <span class="small">IMEI/Serie: {{ o.imei_serie or "-" }}</span>
+                </td>
+                <td>
+                    <b>{{ o.nombre }}</b><br>
+                    <span class="small">{{ o.telefono or "-" }}</span>
+                </td>
+                <td>{{ o.tipo_equipo or "" }} {{ o.marca or "" }} {{ o.modelo or "" }}</td>
+                <td>{{ o.falla or "-" }}</td>
+                <td>USD {{ o.presupuesto or 0 }}</td>
+                <td>
+                    <span class="badge" style="background:{{ color_estado(o.estado) }}">
+                        {{ o.estado }}
+                    </span>
+                    {% if o.cerrado %}
+                        <div class="small">Cerrada</div>
+                    {% endif %}
+                </td>
+                <td class="acciones">
+                    <a class="btn btn-dark" href="/orden/{{ o.id }}">Ver</a>
+                    <a class="btn" href="/cliente/{{ o.cliente_id }}">Cliente</a>
+                    <a class="btn btn-orange" href="/estado/{{ o.id }}/esperando_aprobacion">Esp. aprobación</a>
+                    <a class="btn btn-yellow" href="/estado/{{ o.id }}/esperando_repuesto">Esp. repuesto</a>
+                    <a class="btn" href="/estado/{{ o.id }}/en_reparacion">En reparación</a>
+                    <a class="btn btn-green" href="/listo/{{ o.id }}">Listo</a>
+                    <a class="btn btn-dark" href="/entregar/{{ o.id }}">Entregar</a>
+                    <a class="btn btn-red" href="/mail_presupuesto/{{ o.id }}">Mandar mail</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """, ordenes=ordenes, q=q, resumen=resumen, color_estado=color_estado)
 
 
-@app.get("/ver_ordenes")
-def ver_ordenes():
-    if not session.get("login"):
+@app.route("/nueva", methods=["GET", "POST"])
+def nueva():
+    if not login_required():
+        return redirect("/login")
+
+    mensaje = ""
+
+    if request.method == "POST":
+        nombre = request.form.get("nombre", "").strip()
+        telefono = request.form.get("telefono", "").strip()
+        email = request.form.get("email", "").strip()
+        direccion = request.form.get("direccion", "").strip()
+        cedula = request.form.get("cedula", "").strip()
+        notas_cliente = request.form.get("notas_cliente", "").strip()
+
+        tipo_equipo = request.form.get("tipo_equipo", "").strip()
+        marca = request.form.get("marca", "").strip()
+        modelo = request.form.get("modelo", "").strip()
+        imei_serie = request.form.get("imei_serie", "").strip()
+        falla = request.form.get("falla", "").strip()
+        observaciones = request.form.get("observaciones", "").strip()
+        presupuesto = request.form.get("presupuesto", "").strip()
+        estado = request.form.get("estado", "recibido").strip()
+
+        con = db()
+        cur = con.cursor()
+
+        cliente_id = None
+        if telefono:
+            cur.execute("SELECT id FROM clientes WHERE telefono = %s LIMIT 1", (telefono,))
+            fila = cur.fetchone()
+            if fila:
+                cliente_id = fila["id"]
+
+        if not cliente_id and email:
+            cur.execute("SELECT id FROM clientes WHERE email = %s LIMIT 1", (email,))
+            fila = cur.fetchone()
+            if fila:
+                cliente_id = fila["id"]
+
+        if cliente_id:
+            cur.execute("""
+                UPDATE clientes
+                SET nombre=%s, telefono=%s, email=%s, direccion=%s, cedula=%s, notas=%s
+                WHERE id=%s
+            """, (nombre, telefono, email, direccion, cedula, notas_cliente, cliente_id))
+        else:
+            cur.execute("""
+                INSERT INTO clientes (nombre, telefono, email, direccion, cedula, notas)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (nombre, telefono, email, direccion, cedula, notas_cliente))
+            cliente_id = cur.fetchone()["id"]
+
+        numero_orden = generar_numero_orden()
+
+        cur.execute("""
+            INSERT INTO ordenes (
+                numero_orden, cliente_id, tipo_equipo, marca, modelo,
+                imei_serie, falla, observaciones, presupuesto, estado
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            numero_orden, cliente_id, tipo_equipo, marca, modelo,
+            imei_serie, falla, observaciones, presupuesto if presupuesto else None, estado
+        ))
+
+        con.commit()
+        con.close()
+
+        return redirect("/")
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Nueva orden</title>
+        <style>
+            body { font-family: Arial; background:#f5f5f5; padding:20px; }
+            .box { max-width:900px; margin:auto; background:white; padding:25px; border-radius:12px; }
+            .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+            input, select, textarea { width:100%; padding:10px; margin-top:6px; border:1px solid #ddd; border-radius:8px; }
+            textarea { min-height:100px; }
+            button, a { padding:10px 14px; border:none; border-radius:8px; text-decoration:none; display:inline-block; }
+            button { background:#0d6efd; color:white; }
+            .back { background:#212529; color:white; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Nueva orden</h2>
+            <form method="post">
+                <div class="grid">
+                    <div>
+                        <h3>Cliente</h3>
+                        <label>Nombre</label>
+                        <input type="text" name="nombre" required>
+
+                        <label>Teléfono</label>
+                        <input type="text" name="telefono">
+
+                        <label>Email</label>
+                        <input type="email" name="email">
+
+                        <label>Dirección</label>
+                        <input type="text" name="direccion">
+
+                        <label>Cédula</label>
+                        <input type="text" name="cedula">
+
+                        <label>Notas cliente</label>
+                        <textarea name="notas_cliente"></textarea>
+                    </div>
+
+                    <div>
+                        <h3>Equipo / reparación</h3>
+                        <label>Tipo de equipo</label>
+                        <input type="text" name="tipo_equipo" placeholder="Celular, notebook, tablet...">
+
+                        <label>Marca</label>
+                        <input type="text" name="marca">
+
+                        <label>Modelo</label>
+                        <input type="text" name="modelo">
+
+                        <label>IMEI / Serie</label>
+                        <input type="text" name="imei_serie">
+
+                        <label>Falla</label>
+                        <textarea name="falla" required></textarea>
+
+                        <label>Observaciones</label>
+                        <textarea name="observaciones"></textarea>
+
+                        <label>Presupuesto</label>
+                        <input type="number" step="0.01" name="presupuesto">
+
+                        <label>Estado inicial</label>
+                        <select name="estado">
+                            <option value="recibido">recibido</option>
+                            <option value="diagnostico">diagnostico</option>
+                            <option value="esperando_aprobacion">esperando_aprobacion</option>
+                            <option value="esperando_repuesto">esperando_repuesto</option>
+                            <option value="en_reparacion">en_reparacion</option>
+                            <option value="listo_para_retirar">listo_para_retirar</option>
+                        </select>
+                    </div>
+                </div>
+
+                <br>
+                <button type="submit">Guardar orden</button>
+                <a class="back" href="/">Volver</a>
+            </form>
+        </div>
+    </body>
+    </html>
+    """)
+
+
+@app.route("/orden/<int:id>")
+def ver_orden(id):
+    if not login_required():
+        return redirect("/login")
+
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT o.*, c.nombre, c.telefono, c.email, c.direccion, c.cedula, c.notas
+        FROM ordenes o
+        JOIN clientes c ON c.id = o.cliente_id
+        WHERE o.id = %s
+    """, (id,))
+    o = cur.fetchone()
+    con.close()
+
+    if not o:
+        return "Orden no encontrada", 404
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Orden {{ o.numero_orden }}</title>
+        <style>
+            body { font-family: Arial; background:#f5f5f5; padding:20px; }
+            .box { max-width:900px; margin:auto; background:white; padding:25px; border-radius:12px; }
+            .btn { padding:10px 14px; border:none; border-radius:8px; text-decoration:none; color:white; background:#0d6efd; display:inline-block; }
+            .dark { background:#212529; }
+            .green { background:#198754; }
+            .red { background:#dc3545; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Orden {{ o.numero_orden }}</h2>
+            <p><b>Cliente:</b> {{ o.nombre }}</p>
+            <p><b>Teléfono:</b> {{ o.telefono or '-' }}</p>
+            <p><b>Email:</b> {{ o.email or '-' }}</p>
+            <p><b>Equipo:</b> {{ o.tipo_equipo or '' }} {{ o.marca or '' }} {{ o.modelo or '' }}</p>
+            <p><b>IMEI / Serie:</b> {{ o.imei_serie or '-' }}</p>
+            <p><b>Falla:</b> {{ o.falla or '-' }}</p>
+            <p><b>Observaciones:</b> {{ o.observaciones or '-' }}</p>
+            <p><b>Presupuesto:</b> USD {{ o.presupuesto or 0 }}</p>
+            <p><b>Estado:</b> {{ o.estado }}</p>
+            <p><b>Ingreso:</b> {{ o.fecha_ingreso }}</p>
+            <p><b>Entrega:</b> {{ o.fecha_entrega or '-' }}</p>
+
+            <a class="btn dark" href="/">Volver</a>
+            <a class="btn" href="/cliente/{{ o.cliente_id }}">Ver cliente</a>
+            <a class="btn green" href="/listo/{{ o.id }}">Listo para retirar</a>
+            <a class="btn dark" href="/entregar/{{ o.id }}">Finalizar / entregar</a>
+            <a class="btn red" href="/mail_presupuesto/{{ o.id }}">Mandar mail</a>
+        </div>
+    </body>
+    </html>
+    """, o=o)
+
+
+@app.route("/clientes")
+def clientes():
+    if not login_required():
+        return redirect("/login")
+
+    q = request.args.get("q", "").strip()
+    con = db()
+    cur = con.cursor()
+
+    if q:
+        like = f"%{q}%"
+        cur.execute("""
+            SELECT *
+            FROM clientes
+            WHERE
+                COALESCE(nombre, '') ILIKE %s OR
+                COALESCE(telefono, '') ILIKE %s OR
+                COALESCE(email, '') ILIKE %s
+            ORDER BY id DESC
+        """, (like, like, like))
+    else:
+        cur.execute("SELECT * FROM clientes ORDER BY id DESC")
+
+    clientes = cur.fetchall()
+    con.close()
+
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Clientes</title>
+        <style>
+            body { font-family: Arial; background:#f5f5f5; padding:20px; }
+            .box { max-width:1100px; margin:auto; }
+            .btn { padding:8px 12px; border:none; border-radius:8px; text-decoration:none; color:white; background:#0d6efd; display:inline-block; }
+            .dark { background:#212529; }
+            table { width:100%; border-collapse:collapse; background:white; border-radius:12px; overflow:hidden; }
+            th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; }
+            th { background:#111; color:white; }
+            input { width:100%; padding:10px; margin:10px 0; border:1px solid #ddd; border-radius:8px; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Clientes</h2>
+            <form method="get">
+                <input type="text" name="q" placeholder="Buscar cliente" value="{{ q }}">
+                <button class="btn" type="submit">Buscar</button>
+                <a class="btn dark" href="/">Volver</a>
+            </form>
+
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Nombre</th>
+                    <th>Teléfono</th>
+                    <th>Email</th>
+                    <th>Dirección</th>
+                    <th>Acción</th>
+                </tr>
+                {% for c in clientes %}
+                <tr>
+                    <td>{{ c.id }}</td>
+                    <td>{{ c.nombre }}</td>
+                    <td>{{ c.telefono or '-' }}</td>
+                    <td>{{ c.email or '-' }}</td>
+                    <td>{{ c.direccion or '-' }}</td>
+                    <td><a class="btn" href="/cliente/{{ c.id }}">Ver ficha</a></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </body>
+    </html>
+    """, clientes=clientes, q=q)
+
+
+@app.route("/cliente/<int:id>")
+def ver_cliente(id):
+    if not login_required():
         return redirect("/login")
 
     con = db()
     cur = con.cursor()
 
-    cur.execute(
-        """
-        SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-               o.estado,o.presupuesto
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id=c.id
-        ORDER BY o.id DESC
-        """
-    )
+    cur.execute("SELECT * FROM clientes WHERE id = %s", (id,))
+    cliente = cur.fetchone()
 
+    cur.execute("""
+        SELECT *
+        FROM ordenes
+        WHERE cliente_id = %s
+        ORDER BY id DESC
+    """, (id,))
     ordenes = cur.fetchall()
     con.close()
 
-    html = """
-    <h2 style="margin-top:0;">Todas las órdenes</h2>
-    """ + tabla_estilo_inicio() + """
-      <tr style="background:#eff6ff; text-align:left;">
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Número</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Cliente</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
-      </tr>
-    """
+    if not cliente:
+        return "Cliente no encontrado", 404
 
-    for o in ordenes:
-        equipo = f"{o['tipo_equipo']} {o['marca']} {o['modelo']}"
-        pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
-        badge = estado_presupuesto_badge(o["estado"])
+    return render_template_string("""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Ficha cliente</title>
+        <style>
+            body { font-family: Arial; background:#f5f5f5; padding:20px; }
+            .box { max-width:1000px; margin:auto; background:white; padding:25px; border-radius:12px; }
+            .btn { padding:8px 12px; border:none; border-radius:8px; text-decoration:none; color:white; background:#0d6efd; display:inline-block; }
+            .dark { background:#212529; }
+            table { width:100%; border-collapse:collapse; margin-top:20px; }
+            th, td { padding:10px; border-bottom:1px solid #eee; text-align:left; }
+            th { background:#111; color:white; }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Ficha del cliente</h2>
+            <p><b>Nombre:</b> {{ cliente.nombre }}</p>
+            <p><b>Teléfono:</b> {{ cliente.telefono or '-' }}</p>
+            <p><b>Email:</b> {{ cliente.email or '-' }}</p>
+            <p><b>Dirección:</b> {{ cliente.direccion or '-' }}</p>
+            <p><b>Cédula:</b> {{ cliente.cedula or '-' }}</p>
+            <p><b>Notas:</b> {{ cliente.notas or '-' }}</p>
 
-        html += f"""
-        <tr>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['numero_orden']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['nombre']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['estado']}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
-            <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
-          </td>
-        </tr>
-        """
+            <a class="btn dark" href="/">Volver</a>
 
-    html += tabla_estilo_fin()
-    html += "<p style='margin-top:18px;'><a href='/' style='color:#2563eb; font-weight:bold;'>Volver</a></p>"
+            <h3>Historial de órdenes</h3>
+            <table>
+                <tr>
+                    <th>Orden</th>
+                    <th>Equipo</th>
+                    <th>Falla</th>
+                    <th>Estado</th>
+                    <th>Acción</th>
+                </tr>
+                {% for o in ordenes %}
+                <tr>
+                    <td>{{ o.numero_orden }}</td>
+                    <td>{{ o.tipo_equipo or '' }} {{ o.marca or '' }} {{ o.modelo or '' }}</td>
+                    <td>{{ o.falla or '-' }}</td>
+                    <td>{{ o.estado }}</td>
+                    <td><a class="btn" href="/orden/{{ o.id }}">Ver orden</a></td>
+                </tr>
+                {% endfor %}
+            </table>
+        </div>
+    </body>
+    </html>
+    """, cliente=cliente, ordenes=ordenes)
 
-    return html_layout("Todas las órdenes", card_html(html))
 
-
-@app.route("/actualizar", methods=["GET", "POST"])
-def actualizar():
-    if not session.get("login"):
+@app.route("/estado/<int:id>/<estado>")
+def cambiar_estado(id, estado):
+    if not login_required():
         return redirect("/login")
 
-    if request.method == "GET":
-        numero = request.args.get("numero", "").strip()
+    estados_validos = {
+        "recibido",
+        "diagnostico",
+        "esperando_aprobacion",
+        "esperando_repuesto",
+        "en_reparacion",
+        "listo_para_retirar",
+        "entregado",
+        "cancelado",
+        "presupuesto_aceptado",
+        "presupuesto_rechazado",
+    }
 
-        return html_layout(
-            "Actualizar orden",
-            card_html(f"""
-            <h2 style="margin-top:0;">Actualizar orden</h2>
-            <form method="post">
-              <label>Número</label><br>
-              <input name="numero" value="{numero}" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Estado</label><br>
-              <select name="estado" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;">
-                <option value="">-- elegir --</option>
-                <option value="En diagnóstico">En diagnóstico</option>
-                <option value="Esperando aprobación">Esperando aprobación</option>
-                <option value="Aprobado">Aprobado</option>
-                <option value="Rechazado">Rechazado</option>
-                <option value="Esperando repuesto">Esperando repuesto</option>
-                <option value="En reparación">En reparación</option>
-                <option value="Listo para retirar">Listo para retirar</option>
-                <option value="Entregado">Entregado</option>
-              </select><br>
-
-              <label>Diagnóstico</label><br>
-              <input name="diag" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Presupuesto</label><br>
-              <input name="presupuesto" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:18px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <button style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar</button>
-            </form>
-
-            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
-            """)
-        )
-
-    numero = request.form.get("numero", "").strip()
-    estado = request.form.get("estado", "").strip()
-    diag = request.form.get("diag", "").strip()
-    pres = request.form.get("presupuesto", "").strip()
+    if estado not in estados_validos:
+        return "Estado inválido", 400
 
     con = db()
     cur = con.cursor()
 
-    cur.execute(
-        """
-        SELECT o.*, c.nombre, c.email
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id = c.id
-        WHERE o.numero_orden = %s
-        """,
-        (numero,),
-    )
-    actual = cur.fetchone()
-
-    if not actual:
-        con.close()
-        return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
-
-    if estado == "Esperando aprobación":
-        nuevo_token = secrets.token_urlsafe(32)
-        cur.execute(
-            """
+    if estado == "entregado":
+        cur.execute("""
             UPDATE ordenes
-            SET token_aprobacion=%s,
-                presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
-            WHERE numero_orden=%s
-            """,
-            (nuevo_token, numero),
-        )
-
-    if estado == "Aprobado":
-        cur.execute(
-            """
+            SET estado=%s, cerrado=TRUE, fecha_entrega=NOW(), fecha_actualizacion=NOW()
+            WHERE id=%s
+        """, (estado, id))
+    else:
+        cur.execute("""
             UPDATE ordenes
-            SET presupuesto_aprobado=TRUE,
-                fecha_aprobacion=%s,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
-            WHERE numero_orden=%s
-            """,
-            (datetime.datetime.now(), numero),
-        )
-
-    if estado == "Rechazado":
-        cur.execute(
-            """
-            UPDATE ordenes
-            SET presupuesto_rechazado=TRUE,
-                fecha_rechazo=%s,
-                presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL
-            WHERE numero_orden=%s
-            """,
-            (datetime.datetime.now(), numero),
-        )
-
-    if estado and estado not in ["Aprobado", "Rechazado", "Esperando aprobación"]:
-        cur.execute(
-            """
-            UPDATE ordenes
-            SET presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
-            WHERE numero_orden=%s
-            """,
-            (numero,),
-        )
-
-    if estado:
-        cur.execute("UPDATE ordenes SET estado=%s WHERE numero_orden=%s", (estado, numero))
-
-    if diag:
-        cur.execute("UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s", (diag, numero))
-
-    if pres:
-        cur.execute("UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s", (pres, numero))
-
-    cur.execute(
-        """
-        SELECT o.numero_orden, c.nombre, c.email, o.tipo_equipo, o.marca, o.modelo,
-               o.estado, o.presupuesto, o.token_aprobacion,
-               o.presupuesto_aprobado, o.presupuesto_rechazado
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id=c.id
-        WHERE o.numero_orden=%s
-        """,
-        (numero,),
-    )
-    info = cur.fetchone()
+            SET estado=%s, fecha_actualizacion=NOW()
+            WHERE id=%s
+        """, (estado, id))
 
     con.commit()
     con.close()
-
-    if info and info["email"]:
-        enviar_email(
-            destino=info["email"],
-            numero_orden=info["numero_orden"],
-            cliente=info["nombre"],
-            tipo=info["tipo_equipo"],
-            marca=info["marca"],
-            modelo=info["modelo"],
-            estado=info["estado"],
-            presupuesto=info["presupuesto"],
-            tipo_mensaje="actualizacion",
-            token_aprobacion=info["token_aprobacion"],
-            presupuesto_aprobado=info["presupuesto_aprobado"],
-            presupuesto_rechazado=info["presupuesto_rechazado"]
-        )
-
-    return redirect(f"/buscar?q={numero}")
+    return redirect("/")
 
 
-@app.get("/aceptar_presupuesto/<token>")
-def aceptar_presupuesto(token):
+@app.route("/listo/<int:id>")
+def listo(id):
+    if not login_required():
+        return redirect("/login")
+
     con = db()
     cur = con.cursor()
-
-    cur.execute(
-        """
-        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.estado,
-               o.presupuesto, o.presupuesto_aprobado, o.presupuesto_rechazado
-        FROM ordenes o
-        WHERE o.token_aprobacion=%s
-        """,
-        (token,),
-    )
-    orden = cur.fetchone()
-    con.close()
-
-    if not orden:
-        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
-
-    if orden["presupuesto_aprobado"]:
-        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
-
-    if orden["presupuesto_rechazado"]:
-        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
-
-    if orden["estado"] != "Esperando aprobación":
-        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
-
-    pres = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
-    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
-
-    return html_layout(
-        "Confirmación",
-        card_html(f"""
-        <h2 style="margin-top:0;">Confirmación de presupuesto</h2>
-        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
-        <p><strong>Equipo:</strong> {equipo}</p>
-        <p><strong>Presupuesto:</strong> {pres}</p>
-
-        <div style="background:#fff7ed; border:1px solid #fdba74; padding:14px; border-radius:12px; margin:18px 0;">
-          Está a punto de aceptar el presupuesto de esta reparación.<br>
-          Al confirmar, autoriza a NR Tech a continuar con el trabajo.
-        </div>
-
-        <p><strong>¿Está seguro que desea continuar?</strong></p>
-
-        <form method="post" action="/confirmar_presupuesto/{token}">
-          <button type="submit" style="background:#16a34a; color:white; border:none; padding:14px 22px; border-radius:12px; font-size:15px; cursor:pointer;">
-            Sí, aceptar presupuesto
-          </button>
-        </form>
-        """)
-    )
-
-
-@app.post("/confirmar_presupuesto/<token>")
-def confirmar_presupuesto(token):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        SELECT numero_orden, tipo_equipo, marca, modelo, estado, presupuesto,
-               presupuesto_aprobado, presupuesto_rechazado
-        FROM ordenes
-        WHERE token_aprobacion=%s
-        """,
-        (token,),
-    )
-    orden = cur.fetchone()
-
-    if not orden:
-        con.close()
-        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
-
-    if orden["presupuesto_aprobado"]:
-        con.close()
-        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
-
-    if orden["presupuesto_rechazado"]:
-        con.close()
-        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
-
-    if orden["estado"] != "Esperando aprobación":
-        con.close()
-        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
-
-    cur.execute(
-        """
+    cur.execute("""
         UPDATE ordenes
-        SET presupuesto_aprobado=TRUE,
-            fecha_aprobacion=%s,
-            presupuesto_rechazado=FALSE,
-            fecha_rechazo=NULL,
-            estado=%s
-        WHERE token_aprobacion=%s
-        """,
-        (datetime.datetime.now(), "Aprobado", token),
-    )
-
+        SET estado='listo_para_retirar', fecha_actualizacion=NOW()
+        WHERE id=%s
+    """, (id,))
     con.commit()
     con.close()
-
-    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
-
-    return html_layout(
-        "Aceptado",
-        card_html(f"""
-        <h2 style="margin-top:0; color:#16a34a;">Presupuesto aceptado correctamente</h2>
-        <p>Gracias por confirmar.</p>
-        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
-        <p><strong>Equipo:</strong> {equipo}</p>
-        <p>NR Tech continuará con la reparación a la brevedad.</p>
-        """)
-    )
+    return redirect("/")
 
 
-@app.get("/rechazar_presupuesto/<token>")
-def rechazar_presupuesto(token):
+@app.route("/entregar/<int:id>")
+def entregar(id):
+    if not login_required():
+        return redirect("/login")
+
     con = db()
     cur = con.cursor()
-
-    cur.execute(
-        """
-        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.estado,
-               o.presupuesto, o.presupuesto_aprobado, o.presupuesto_rechazado
-        FROM ordenes o
-        WHERE o.token_aprobacion=%s
-        """,
-        (token,),
-    )
-    orden = cur.fetchone()
-    con.close()
-
-    if not orden:
-        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
-
-    if orden["presupuesto_rechazado"]:
-        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
-
-    if orden["presupuesto_aprobado"]:
-        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
-
-    if orden["estado"] != "Esperando aprobación":
-        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
-
-    pres = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
-    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
-
-    return html_layout(
-        "Rechazo",
-        card_html(f"""
-        <h2 style="margin-top:0;">Rechazo de presupuesto</h2>
-        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
-        <p><strong>Equipo:</strong> {equipo}</p>
-        <p><strong>Presupuesto:</strong> {pres}</p>
-
-        <div style="background:#fef2f2; border:1px solid #fca5a5; padding:14px; border-radius:12px; margin:18px 0;">
-          Está a punto de rechazar el presupuesto de esta reparación.
-        </div>
-
-        <p><strong>¿Está seguro que desea rechazarlo?</strong></p>
-
-        <form method="post" action="/confirmar_rechazo_presupuesto/{token}">
-          <button type="submit" style="background:#dc2626; color:white; border:none; padding:14px 22px; border-radius:12px; font-size:15px; cursor:pointer;">
-            Sí, rechazar presupuesto
-          </button>
-        </form>
-        """)
-    )
-
-
-@app.post("/confirmar_rechazo_presupuesto/<token>")
-def confirmar_rechazo_presupuesto(token):
-    con = db()
-    cur = con.cursor()
-
-    cur.execute(
-        """
-        SELECT numero_orden, tipo_equipo, marca, modelo, estado, presupuesto,
-               presupuesto_aprobado, presupuesto_rechazado
-        FROM ordenes
-        WHERE token_aprobacion=%s
-        """,
-        (token,),
-    )
-    orden = cur.fetchone()
-
-    if not orden:
-        con.close()
-        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
-
-    if orden["presupuesto_rechazado"]:
-        con.close()
-        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
-
-    if orden["presupuesto_aprobado"]:
-        con.close()
-        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
-
-    if orden["estado"] != "Esperando aprobación":
-        con.close()
-        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
-
-    cur.execute(
-        """
+    cur.execute("""
         UPDATE ordenes
-        SET presupuesto_rechazado=TRUE,
-            fecha_rechazo=%s,
-            presupuesto_aprobado=FALSE,
-            fecha_aprobacion=NULL,
-            estado=%s
-        WHERE token_aprobacion=%s
-        """,
-        (datetime.datetime.now(), "Rechazado", token),
-    )
+        SET estado='entregado', cerrado=TRUE, fecha_entrega=NOW(), fecha_actualizacion=NOW()
+        WHERE id=%s
+    """, (id,))
+    con.commit()
+    con.close()
+    return redirect("/")
 
+
+@app.route("/mail_presupuesto/<int:id>")
+def mail_presupuesto(id):
+    if not login_required():
+        return redirect("/login")
+
+    ok, msg = enviar_mail_presupuesto(id)
+    return f"""
+    <html>
+    <body style="font-family:Arial; padding:30px;">
+        <h2>{'Éxito' if ok else 'Error'}</h2>
+        <p>{msg}</p>
+        <a href="/">Volver</a>
+    </body>
+    </html>
+    """
+
+
+@app.route("/presupuesto/aceptar/<int:id>")
+def aceptar_presupuesto(id):
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE ordenes
+        SET estado='presupuesto_aceptado', fecha_actualizacion=NOW()
+        WHERE id=%s
+    """, (id,))
     con.commit()
     con.close()
 
-    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+    return """
+    <html>
+    <body style="font-family:Arial; text-align:center; padding:40px;">
+        <h2 style="color:green;">Presupuesto aceptado</h2>
+        <p>Gracias. En breve nos comunicamos contigo.</p>
+    </body>
+    </html>
+    """
 
-    return html_layout(
-        "Rechazado",
-        card_html(f"""
-        <h2 style="margin-top:0; color:#dc2626;">Presupuesto rechazado</h2>
-        <p>La decisión fue registrada correctamente.</p>
-        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
-        <p><strong>Equipo:</strong> {equipo}</p>
-        <p>Si desea retomar la reparación más adelante, podrá comunicarse con NR Tech.</p>
-        """)
-    )
 
+@app.route("/presupuesto/rechazar/<int:id>")
+def rechazar_presupuesto(id):
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        UPDATE ordenes
+        SET estado='presupuesto_rechazado', fecha_actualizacion=NOW()
+        WHERE id=%s
+    """, (id,))
+    con.commit()
+    con.close()
+
+    return """
+    <html>
+    <body style="font-family:Arial; text-align:center; padding:40px;">
+        <h2 style="color:red;">Presupuesto rechazado</h2>
+        <p>Tu respuesta fue registrada correctamente.</p>
+    </body>
+    </html>
+    """
+
+
+init_db()
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000, debug=True)
