@@ -8,6 +8,7 @@ from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formataddr
 import datetime
+import secrets
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
@@ -24,6 +25,61 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 
 def db():
     return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
+
+
+def estado_presupuesto_badge(estado):
+    if estado == "Aprobado":
+        return "<span style='color:white;background:#16a34a;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Aceptado</span>"
+    elif estado == "Rechazado":
+        return "<span style='color:white;background:#dc2626;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Rechazado</span>"
+    elif estado == "Esperando aprobación":
+        return "<span style='color:white;background:#f59e0b;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>En espera</span>"
+    return "<span style='color:#6b7280;'>-</span>"
+
+
+def html_layout(titulo, contenido):
+    return f"""
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>{titulo}</title>
+      </head>
+      <body style="margin:0; font-family:Arial, sans-serif; background:#f3f6fb; color:#111827;">
+        <div style="max-width:1100px; margin:0 auto; padding:24px;">
+          <div style="background:linear-gradient(135deg,#0f172a,#1d4ed8); color:white; border-radius:18px; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.12);">
+            <h1 style="margin:0; font-size:28px;">NR Tech</h1>
+            <p style="margin:8px 0 0 0; opacity:0.92;">Sistema de gestión de reparaciones</p>
+          </div>
+
+          <div style="margin-top:18px;">
+            {contenido}
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+
+
+def card_html(contenido):
+    return f"""
+    <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+      {contenido}
+    </div>
+    """
+
+
+def tabla_estilo_inicio():
+    return """
+    <div style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; background:white; border-radius:16px; overflow:hidden;">
+    """
+
+
+def tabla_estilo_fin():
+    return """
+      </table>
+    </div>
+    """
 
 
 def init_db():
@@ -55,22 +111,35 @@ def init_db():
         fecha_ingreso DATE,
         estado TEXT,
         presupuesto NUMERIC DEFAULT 0,
-        observaciones TEXT
+        observaciones TEXT,
+        token_aprobacion TEXT,
+        presupuesto_aprobado BOOLEAN DEFAULT FALSE,
+        fecha_aprobacion TIMESTAMP,
+        presupuesto_rechazado BOOLEAN DEFAULT FALSE,
+        fecha_rechazo TIMESTAMP
     );
     """)
+
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS token_aprobacion TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS presupuesto_aprobado BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_aprobacion TIMESTAMP;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS presupuesto_rechazado BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_rechazo TIMESTAMP;")
 
     con.commit()
     con.close()
 
 
-def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto, tipo_mensaje="actualizacion"):
+def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, presupuesto,
+                 tipo_mensaje="actualizacion", token_aprobacion=None,
+                 presupuesto_aprobado=False, presupuesto_rechazado=False):
     if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
         print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
         return
 
     try:
         pres = float(presupuesto or 0)
-    except:
+    except Exception:
         pres = 0.0
 
     presupuesto_mostrar = "En diagnóstico" if pres == 0 else f"${pres}"
@@ -84,6 +153,64 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
 
     logo_path = Path(__file__).with_name("logo_nrtech.png")
     logo_cid = "logo_nrtech" if logo_path.exists() else None
+
+    botones_presupuesto_html = ""
+    texto_presupuesto = ""
+
+    if (
+        estado == "Esperando aprobación"
+        and not presupuesto_aprobado
+        and not presupuesto_rechazado
+        and token_aprobacion
+        and BASE_URL
+        and pres > 0
+    ):
+        link_aprobacion = f"{BASE_URL}/aceptar_presupuesto/{token_aprobacion}"
+        link_rechazo = f"{BASE_URL}/rechazar_presupuesto/{token_aprobacion}"
+
+        botones_presupuesto_html = f"""
+        <div style="text-align:center; margin-top:16px;">
+          <a href="{link_aprobacion}" style="
+            display:inline-block;
+            background:#16a34a;
+            color:#ffffff;
+            text-decoration:none;
+            font-weight:700;
+            padding:14px 22px;
+            border-radius:14px;
+            font-size:14px;
+            letter-spacing:0.3px;
+            box-shadow:0 6px 18px rgba(22,163,74,0.25);
+            margin-right:8px;
+          ">
+            ✅ Aceptar presupuesto
+          </a>
+
+          <a href="{link_rechazo}" style="
+            display:inline-block;
+            background:#dc2626;
+            color:#ffffff;
+            text-decoration:none;
+            font-weight:700;
+            padding:14px 22px;
+            border-radius:14px;
+            font-size:14px;
+            letter-spacing:0.3px;
+            box-shadow:0 6px 18px rgba(220,38,38,0.25);
+            margin-left:8px;
+          ">
+            ❌ Rechazar presupuesto
+          </a>
+        </div>
+        <p style="margin-top:10px; font-size:12px; color:#6b7280; text-align:center;">
+          Al tocar un botón no se confirma automáticamente. Primero se mostrará una confirmación final.
+        </p>
+        """
+
+        texto_presupuesto = (
+            f"\nAceptar presupuesto: {link_aprobacion}\n"
+            f"Rechazar presupuesto: {link_rechazo}\n"
+        )
 
     cuerpo_html = f"""
     <html>
@@ -107,6 +234,8 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
                 <div style="margin:6px 0; font-size:13px;"><strong>Estado:</strong> <span style="color:#16a34a;">{estado}</span></div>
                 <div style="margin:6px 0; font-size:13px;"><strong>Presupuesto:</strong> <span style="color:#b45309;">{presupuesto_mostrar}</span></div>
               </div>
+
+              {botones_presupuesto_html}
 
               <div style="text-align:center; margin-top:18px;">
                 <a href="{WHATSAPP_LINK}" style="
@@ -155,7 +284,8 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
         f"Orden: {numero_orden}\n"
         f"Equipo: {tipo} {marca} {modelo}\n"
         f"Estado: {estado}\n"
-        f"Presupuesto: {presupuesto_mostrar}\n\n"
+        f"Presupuesto: {presupuesto_mostrar}\n"
+        f"{texto_presupuesto}\n"
         f"WhatsApp: {WHATSAPP_LINK}\n"
         f"NR Tech"
     )
@@ -181,40 +311,49 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
 
 init_db()
 
+
 @app.get("/reset_db")
 def reset_db():
-
     if not session.get("login"):
         return redirect("/login")
 
     con = db()
     cur = con.cursor()
-
     cur.execute("DROP TABLE IF EXISTS ordenes CASCADE;")
     cur.execute("DROP TABLE IF EXISTS clientes CASCADE;")
-
     con.commit()
     con.close()
 
     init_db()
 
-    return """
-    <h2>Base de datos reiniciada</h2>
-    <p>Las tablas fueron borradas y creadas nuevamente.</p>
-    <a href="/">Volver</a>
-    """
+    return html_layout(
+        "Base reiniciada",
+        card_html("""
+        <h2 style="margin-top:0;">Base de datos reiniciada</h2>
+        <p>Las tablas fueron borradas y creadas nuevamente.</p>
+        <p><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+        """)
+    )
+
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "GET":
-        return """
-        <h3>Login NR Tech</h3>
-        <form method="post">
-          Usuario: <input name="user"><br>
-          Contraseña: <input name="pass" type="password"><br>
-          <button>Entrar</button>
-        </form>
-        """
+        return html_layout(
+            "Login",
+            card_html("""
+            <h2 style="margin-top:0;">Login NR Tech</h2>
+            <form method="post">
+              <label>Usuario</label><br>
+              <input name="user" style="width:100%; max-width:360px; padding:10px; margin-top:6px; margin-bottom:14px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Contraseña</label><br>
+              <input name="pass" type="password" style="width:100%; max-width:360px; padding:10px; margin-top:6px; margin-bottom:14px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <button style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Entrar</button>
+            </form>
+            """)
+        )
 
     user = request.form.get("user", "").strip()
     password = request.form.get("pass", "").strip()
@@ -222,8 +361,14 @@ def login():
     if user == USER and password == PASS:
         session["login"] = True
         return redirect("/")
-    else:
-        return "<p>Usuario o contraseña incorrectos</p><p><a href='/login'>Volver</a></p>"
+
+    return html_layout(
+        "Login",
+        card_html("""
+        <h2 style="margin-top:0;">Usuario o contraseña incorrectos</h2>
+        <p><a href="/login" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+        """)
+    )
 
 
 @app.get("/logout")
@@ -237,15 +382,39 @@ def home():
     if not session.get("login"):
         return redirect("/login")
 
-    return """
-    <h2>NR Tech - Taller</h2>
-    <ul>
-      <li><a href="/crear">Crear orden</a></li>
-      <li><a href="/buscar">Buscar orden</a></li>
-      <li><a href="/ver_ordenes">Ver todas las órdenes</a></li>
-      <li><a href="/logout">Salir</a></li>
-    </ul>
+    contenido = """
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
+      <a href="/crear" style="text-decoration:none; color:inherit;">
+        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+          <h3 style="margin:0 0 8px 0;">➕ Crear orden</h3>
+          <p style="margin:0; color:#6b7280;">Registrar un nuevo equipo en el taller.</p>
+        </div>
+      </a>
+
+      <a href="/buscar" style="text-decoration:none; color:inherit;">
+        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+          <h3 style="margin:0 0 8px 0;">🔎 Buscar orden</h3>
+          <p style="margin:0; color:#6b7280;">Buscar por número, nombre, email, IMEI o serie.</p>
+        </div>
+      </a>
+
+      <a href="/ver_ordenes" style="text-decoration:none; color:inherit;">
+        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+          <h3 style="margin:0 0 8px 0;">📋 Ver órdenes</h3>
+          <p style="margin:0; color:#6b7280;">Ver todas las reparaciones registradas.</p>
+        </div>
+      </a>
+
+      <a href="/logout" style="text-decoration:none; color:inherit;">
+        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+          <h3 style="margin:0 0 8px 0;">🚪 Salir</h3>
+          <p style="margin:0; color:#6b7280;">Cerrar sesión del sistema.</p>
+        </div>
+      </a>
+    </div>
     """
+
+    return html_layout("Inicio", contenido)
 
 
 @app.route("/crear", methods=["GET", "POST"])
@@ -254,27 +423,47 @@ def crear():
         return redirect("/login")
 
     if request.method == "GET":
-        return """
-        <h3>Crear orden</h3>
-        <form method="post">
-          Nombre: <input name="nombre"><br>
-          Teléfono: <input name="telefono"><br>
-          Email: <input name="email"><br><br>
+        return html_layout(
+            "Crear orden",
+            card_html("""
+            <h2 style="margin-top:0;">Crear orden</h2>
+            <form method="post">
+              <label>Nombre</label><br>
+              <input name="nombre" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          Tipo equipo: <input name="tipo"><br>
-          Marca: <input name="marca"><br>
-          Modelo: <input name="modelo"><br>
-          N° serie: <input name="numero_serie"><br>
-          IMEI: <input name="imei"><br>
+              <label>Teléfono</label><br>
+              <input name="telefono" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          Estado general: <input name="estado_general"><br>
-          Falla cliente: <input name="falla_cliente"><br>
+              <label>Email</label><br>
+              <input name="email" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:20px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          <button type="submit">Guardar</button>
-        </form>
+              <label>Tipo equipo</label><br>
+              <input name="tipo" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-        <p><a href="/">Volver</a></p>
-        """
+              <label>Marca</label><br>
+              <input name="marca" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Modelo</label><br>
+              <input name="modelo" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>N° serie</label><br>
+              <input name="numero_serie" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>IMEI</label><br>
+              <input name="imei" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Estado general</label><br>
+              <input name="estado_general" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Falla cliente</label><br>
+              <input name="falla_cliente" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:18px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <button type="submit" style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar</button>
+            </form>
+
+            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+            """)
+        )
 
     nombre = request.form.get("nombre", "").strip()
     telefono = request.form.get("telefono", "").strip()
@@ -302,13 +491,17 @@ def crear():
         )
         cliente_id = cur.fetchone()["id"]
 
+    token_aprobacion = secrets.token_urlsafe(32)
+
     cur.execute(
         """
         INSERT INTO ordenes(
             numero_orden, cliente_id, tipo_equipo, marca, modelo, numero_serie, imei,
-            estado_general, falla_cliente, diagnostico_tecnico, fecha_ingreso, estado, presupuesto, observaciones
+            estado_general, falla_cliente, diagnostico_tecnico, fecha_ingreso, estado,
+            presupuesto, observaciones, token_aprobacion, presupuesto_aprobado,
+            fecha_aprobacion, presupuesto_rechazado, fecha_rechazo
         )
-        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_DATE,%s,%s,%s)
+        VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,CURRENT_DATE,%s,%s,%s,%s,%s,%s,%s,%s)
         RETURNING id
         """,
         (
@@ -325,6 +518,11 @@ def crear():
             "Recibido en taller",
             0,
             "",
+            token_aprobacion,
+            False,
+            None,
+            False,
+            None,
         ),
     )
 
@@ -332,15 +530,10 @@ def crear():
     anio = datetime.datetime.now().year
     numero_orden = f"NR-{anio}-{oid:04d}"
 
-    cur.execute(
-        "UPDATE ordenes SET numero_orden=%s WHERE id=%s",
-        (numero_orden, oid),
-    )
-
+    cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s", (numero_orden, oid))
     con.commit()
     con.close()
 
-    print("Intentando enviar email de ingreso a:", email)
     enviar_email(
         destino=email,
         numero_orden=numero_orden,
@@ -350,15 +543,21 @@ def crear():
         modelo=modelo,
         estado="Recibido en taller",
         presupuesto=0,
-        tipo_mensaje="ingreso"
+        tipo_mensaje="ingreso",
+        token_aprobacion=token_aprobacion,
+        presupuesto_aprobado=False,
+        presupuesto_rechazado=False
     )
 
-    return f"""
-    <h3>Orden creada</h3>
-    Numero: {numero_orden}
-    <p><a href="/buscar?q={numero_orden}">Ver orden</a></p>
-    <p><a href="/">Volver</a></p>
-    """
+    return html_layout(
+        "Orden creada",
+        card_html(f"""
+        <h2 style="margin-top:0;">Orden creada correctamente</h2>
+        <p><strong>Número:</strong> {numero_orden}</p>
+        <p><a href="/buscar?q={numero_orden}" style="color:#2563eb; font-weight:bold;">Ver orden</a></p>
+        <p><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+        """)
+    )
 
 
 @app.get("/buscar")
@@ -369,15 +568,18 @@ def buscar():
     q = request.args.get("q", "").strip()
 
     if not q:
-        return """
-        <h3>Buscar orden</h3>
-        <form>
-          Buscar por numero, nombre, telefono, email, imei o serie<br><br>
-          <input name="q">
-          <button>Buscar</button>
-        </form>
-        <p><a href="/">Volver</a></p>
-        """
+        return html_layout(
+            "Buscar orden",
+            card_html("""
+            <h2 style="margin-top:0;">Buscar orden</h2>
+            <form>
+              <p style="margin-top:0; color:#6b7280;">Buscar por número, nombre, teléfono, email, IMEI o serie</p>
+              <input name="q" style="width:100%; max-width:420px; padding:10px; border:1px solid #d1d5db; border-radius:10px;">
+              <button style="margin-left:8px; background:#2563eb; color:white; border:none; padding:11px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Buscar</button>
+            </form>
+            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+            """)
+        )
 
     con = db()
     cur = con.cursor()
@@ -403,38 +605,52 @@ def buscar():
     con.close()
 
     if not resultados:
-        return "Sin resultados"
+        return html_layout(
+            "Sin resultados",
+            card_html("""
+            <h2 style="margin-top:0;">Sin resultados</h2>
+            <p>No se encontró ninguna orden con esa búsqueda.</p>
+            <p><a href="/buscar" style="color:#2563eb; font-weight:bold;">Volver a buscar</a></p>
+            """)
+        )
 
     html = """
-    <h3>Resultados</h3>
-    <table border=1 cellpadding=6>
-    <tr>
-      <th>Numero</th>
-      <th>Cliente</th>
-      <th>Equipo</th>
-      <th>Estado</th>
-      <th>Presupuesto</th>
-      <th></th>
-    </tr>
+    <h2 style="margin-top:0;">Resultados</h2>
+    """ + tabla_estilo_inicio() + """
+      <tr style="background:#eff6ff; text-align:left;">
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Número</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Cliente</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
+      </tr>
     """
 
     for r in resultados:
         equipo = f"{r['tipo_equipo']} {r['marca']} {r['modelo']}"
         pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
+        badge = estado_presupuesto_badge(r["estado"])
 
         html += f"""
         <tr>
-          <td>{r['numero_orden']}</td>
-          <td>{r['nombre']}</td>
-          <td>{equipo}</td>
-          <td>{r['estado']}</td>
-          <td>{pres}</td>
-          <td><a href="/actualizar?numero={r['numero_orden']}">Actualizar</a></td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['numero_orden']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['nombre']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['estado']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
+          </td>
         </tr>
         """
 
-    html += "</table><p><a href='/'>Volver</a></p>"
-    return html
+    html += tabla_estilo_fin()
+    html += "<p style='margin-top:18px;'><a href='/' style='color:#2563eb; font-weight:bold;'>Volver</a></p>"
+
+    return html_layout("Resultados", card_html(html))
 
 
 @app.get("/ver_ordenes")
@@ -459,35 +675,42 @@ def ver_ordenes():
     con.close()
 
     html = """
-    <h2>Todas las ordenes</h2>
-    <table border=1 cellpadding=6>
-    <tr>
-      <th>Numero</th>
-      <th>Cliente</th>
-      <th>Equipo</th>
-      <th>Estado</th>
-      <th>Presupuesto</th>
-      <th></th>
-    </tr>
+    <h2 style="margin-top:0;">Todas las órdenes</h2>
+    """ + tabla_estilo_inicio() + """
+      <tr style="background:#eff6ff; text-align:left;">
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Número</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Cliente</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
+      </tr>
     """
 
     for o in ordenes:
         equipo = f"{o['tipo_equipo']} {o['marca']} {o['modelo']}"
         pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
+        badge = estado_presupuesto_badge(o["estado"])
 
         html += f"""
         <tr>
-          <td>{o['numero_orden']}</td>
-          <td>{o['nombre']}</td>
-          <td>{equipo}</td>
-          <td>{o['estado']}</td>
-          <td>{pres}</td>
-          <td><a href="/actualizar?numero={o['numero_orden']}">Actualizar</a></td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['numero_orden']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['nombre']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['estado']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
+          </td>
         </tr>
         """
 
-    html += "</table><p><a href='/'>Volver</a></p>"
-    return html
+    html += tabla_estilo_fin()
+    html += "<p style='margin-top:18px;'><a href='/' style='color:#2563eb; font-weight:bold;'>Volver</a></p>"
+
+    return html_layout("Todas las órdenes", card_html(html))
 
 
 @app.route("/actualizar", methods=["GET", "POST"])
@@ -498,35 +721,39 @@ def actualizar():
     if request.method == "GET":
         numero = request.args.get("numero", "").strip()
 
-        return f"""
-        <h3>Actualizar orden</h3>
-        <form method="post">
-          Numero
-          <input name="numero" value="{numero}"><br><br>
+        return html_layout(
+            "Actualizar orden",
+            card_html(f"""
+            <h2 style="margin-top:0;">Actualizar orden</h2>
+            <form method="post">
+              <label>Número</label><br>
+              <input name="numero" value="{numero}" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          Estado
-          <select name="estado">
-            <option value="">-- elegir --</option>
-            <option value="En diagnóstico">En diagnóstico</option>
-            <option value="Esperando aprobación">Esperando aprobación</option>
-            <option value="Esperando repuesto">Esperando repuesto</option>
-            <option value="En reparación">En reparación</option>
-            <option value="Listo para retirar">Listo para retirar</option>
-            <option value="Entregado">Entregado</option>
-          </select>
-          <br><br>
+              <label>Estado</label><br>
+              <select name="estado" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;">
+                <option value="">-- elegir --</option>
+                <option value="En diagnóstico">En diagnóstico</option>
+                <option value="Esperando aprobación">Esperando aprobación</option>
+                <option value="Aprobado">Aprobado</option>
+                <option value="Rechazado">Rechazado</option>
+                <option value="Esperando repuesto">Esperando repuesto</option>
+                <option value="En reparación">En reparación</option>
+                <option value="Listo para retirar">Listo para retirar</option>
+                <option value="Entregado">Entregado</option>
+              </select><br>
 
-          Diagnostico
-          <input name="diag"><br>
+              <label>Diagnóstico</label><br>
+              <input name="diag" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          Presupuesto
-          <input name="presupuesto"><br>
+              <label>Presupuesto</label><br>
+              <input name="presupuesto" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:18px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-          <button>Guardar</button>
-        </form>
+              <button style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar</button>
+            </form>
 
-        <p><a href="/">Volver</a></p>
-        """
+            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+            """)
+        )
 
     numero = request.form.get("numero", "").strip()
     estado = request.form.get("estado", "").strip()
@@ -536,28 +763,89 @@ def actualizar():
     con = db()
     cur = con.cursor()
 
-    if estado:
+    cur.execute(
+        """
+        SELECT o.*, c.nombre, c.email
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id = c.id
+        WHERE o.numero_orden = %s
+        """,
+        (numero,),
+    )
+    actual = cur.fetchone()
+
+    if not actual:
+        con.close()
+        return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+
+    if estado == "Esperando aprobación":
+        nuevo_token = secrets.token_urlsafe(32)
         cur.execute(
-            "UPDATE ordenes SET estado=%s WHERE numero_orden=%s",
-            (estado, numero),
+            """
+            UPDATE ordenes
+            SET token_aprobacion=%s,
+                presupuesto_aprobado=FALSE,
+                fecha_aprobacion=NULL,
+                presupuesto_rechazado=FALSE,
+                fecha_rechazo=NULL
+            WHERE numero_orden=%s
+            """,
+            (nuevo_token, numero),
         )
+
+    if estado == "Aprobado":
+        cur.execute(
+            """
+            UPDATE ordenes
+            SET presupuesto_aprobado=TRUE,
+                fecha_aprobacion=%s,
+                presupuesto_rechazado=FALSE,
+                fecha_rechazo=NULL
+            WHERE numero_orden=%s
+            """,
+            (datetime.datetime.now(), numero),
+        )
+
+    if estado == "Rechazado":
+        cur.execute(
+            """
+            UPDATE ordenes
+            SET presupuesto_rechazado=TRUE,
+                fecha_rechazo=%s,
+                presupuesto_aprobado=FALSE,
+                fecha_aprobacion=NULL
+            WHERE numero_orden=%s
+            """,
+            (datetime.datetime.now(), numero),
+        )
+
+    if estado and estado not in ["Aprobado", "Rechazado", "Esperando aprobación"]:
+        cur.execute(
+            """
+            UPDATE ordenes
+            SET presupuesto_aprobado=FALSE,
+                fecha_aprobacion=NULL,
+                presupuesto_rechazado=FALSE,
+                fecha_rechazo=NULL
+            WHERE numero_orden=%s
+            """,
+            (numero,),
+        )
+
+    if estado:
+        cur.execute("UPDATE ordenes SET estado=%s WHERE numero_orden=%s", (estado, numero))
 
     if diag:
-        cur.execute(
-            "UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s",
-            (diag, numero),
-        )
+        cur.execute("UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s", (diag, numero))
 
     if pres:
-        cur.execute(
-            "UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s",
-            (pres, numero),
-        )
+        cur.execute("UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s", (pres, numero))
 
     cur.execute(
         """
         SELECT o.numero_orden, c.nombre, c.email, o.tipo_equipo, o.marca, o.modelo,
-               o.estado, o.presupuesto
+               o.estado, o.presupuesto, o.token_aprobacion,
+               o.presupuesto_aprobado, o.presupuesto_rechazado
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
         WHERE o.numero_orden=%s
@@ -569,10 +857,7 @@ def actualizar():
     con.commit()
     con.close()
 
-    print("INFO UPDATE:", info)
-
     if info and info["email"]:
-        print("Intentando enviar actualización a:", info["email"])
         enviar_email(
             destino=info["email"],
             numero_orden=info["numero_orden"],
@@ -582,12 +867,248 @@ def actualizar():
             modelo=info["modelo"],
             estado=info["estado"],
             presupuesto=info["presupuesto"],
-            tipo_mensaje="actualizacion"
+            tipo_mensaje="actualizacion",
+            token_aprobacion=info["token_aprobacion"],
+            presupuesto_aprobado=info["presupuesto_aprobado"],
+            presupuesto_rechazado=info["presupuesto_rechazado"]
         )
-    else:
-        print("No se pudo enviar email de actualización: falta email o info.")
 
     return redirect(f"/buscar?q={numero}")
+
+
+@app.get("/aceptar_presupuesto/<token>")
+def aceptar_presupuesto(token):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        """
+        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.estado,
+               o.presupuesto, o.presupuesto_aprobado, o.presupuesto_rechazado
+        FROM ordenes o
+        WHERE o.token_aprobacion=%s
+        """,
+        (token,),
+    )
+    orden = cur.fetchone()
+    con.close()
+
+    if not orden:
+        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
+
+    if orden["presupuesto_aprobado"]:
+        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
+
+    if orden["presupuesto_rechazado"]:
+        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
+
+    if orden["estado"] != "Esperando aprobación":
+        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
+
+    pres = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
+    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+
+    return html_layout(
+        "Confirmación",
+        card_html(f"""
+        <h2 style="margin-top:0;">Confirmación de presupuesto</h2>
+        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
+        <p><strong>Equipo:</strong> {equipo}</p>
+        <p><strong>Presupuesto:</strong> {pres}</p>
+
+        <div style="background:#fff7ed; border:1px solid #fdba74; padding:14px; border-radius:12px; margin:18px 0;">
+          Está a punto de aceptar el presupuesto de esta reparación.<br>
+          Al confirmar, autoriza a NR Tech a continuar con el trabajo.
+        </div>
+
+        <p><strong>¿Está seguro que desea continuar?</strong></p>
+
+        <form method="post" action="/confirmar_presupuesto/{token}">
+          <button type="submit" style="background:#16a34a; color:white; border:none; padding:14px 22px; border-radius:12px; font-size:15px; cursor:pointer;">
+            Sí, aceptar presupuesto
+          </button>
+        </form>
+        """)
+    )
+
+
+@app.post("/confirmar_presupuesto/<token>")
+def confirmar_presupuesto(token):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        """
+        SELECT numero_orden, tipo_equipo, marca, modelo, estado, presupuesto,
+               presupuesto_aprobado, presupuesto_rechazado
+        FROM ordenes
+        WHERE token_aprobacion=%s
+        """,
+        (token,),
+    )
+    orden = cur.fetchone()
+
+    if not orden:
+        con.close()
+        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
+
+    if orden["presupuesto_aprobado"]:
+        con.close()
+        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
+
+    if orden["presupuesto_rechazado"]:
+        con.close()
+        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
+
+    if orden["estado"] != "Esperando aprobación":
+        con.close()
+        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
+
+    cur.execute(
+        """
+        UPDATE ordenes
+        SET presupuesto_aprobado=TRUE,
+            fecha_aprobacion=%s,
+            presupuesto_rechazado=FALSE,
+            fecha_rechazo=NULL,
+            estado=%s
+        WHERE token_aprobacion=%s
+        """,
+        (datetime.datetime.now(), "Aprobado", token),
+    )
+
+    con.commit()
+    con.close()
+
+    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+
+    return html_layout(
+        "Aceptado",
+        card_html(f"""
+        <h2 style="margin-top:0; color:#16a34a;">Presupuesto aceptado correctamente</h2>
+        <p>Gracias por confirmar.</p>
+        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
+        <p><strong>Equipo:</strong> {equipo}</p>
+        <p>NR Tech continuará con la reparación a la brevedad.</p>
+        """)
+    )
+
+
+@app.get("/rechazar_presupuesto/<token>")
+def rechazar_presupuesto(token):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        """
+        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.estado,
+               o.presupuesto, o.presupuesto_aprobado, o.presupuesto_rechazado
+        FROM ordenes o
+        WHERE o.token_aprobacion=%s
+        """,
+        (token,),
+    )
+    orden = cur.fetchone()
+    con.close()
+
+    if not orden:
+        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
+
+    if orden["presupuesto_rechazado"]:
+        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
+
+    if orden["presupuesto_aprobado"]:
+        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
+
+    if orden["estado"] != "Esperando aprobación":
+        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
+
+    pres = "En diagnóstico" if float(orden["presupuesto"] or 0) == 0 else f"${orden['presupuesto']}"
+    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+
+    return html_layout(
+        "Rechazo",
+        card_html(f"""
+        <h2 style="margin-top:0;">Rechazo de presupuesto</h2>
+        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
+        <p><strong>Equipo:</strong> {equipo}</p>
+        <p><strong>Presupuesto:</strong> {pres}</p>
+
+        <div style="background:#fef2f2; border:1px solid #fca5a5; padding:14px; border-radius:12px; margin:18px 0;">
+          Está a punto de rechazar el presupuesto de esta reparación.
+        </div>
+
+        <p><strong>¿Está seguro que desea rechazarlo?</strong></p>
+
+        <form method="post" action="/confirmar_rechazo_presupuesto/{token}">
+          <button type="submit" style="background:#dc2626; color:white; border:none; padding:14px 22px; border-radius:12px; font-size:15px; cursor:pointer;">
+            Sí, rechazar presupuesto
+          </button>
+        </form>
+        """)
+    )
+
+
+@app.post("/confirmar_rechazo_presupuesto/<token>")
+def confirmar_rechazo_presupuesto(token):
+    con = db()
+    cur = con.cursor()
+
+    cur.execute(
+        """
+        SELECT numero_orden, tipo_equipo, marca, modelo, estado, presupuesto,
+               presupuesto_aprobado, presupuesto_rechazado
+        FROM ordenes
+        WHERE token_aprobacion=%s
+        """,
+        (token,),
+    )
+    orden = cur.fetchone()
+
+    if not orden:
+        con.close()
+        return html_layout("Link inválido", card_html("<h2 style='margin-top:0;'>Link inválido o vencido</h2><p>Este enlace no es válido.</p>"))
+
+    if orden["presupuesto_rechazado"]:
+        con.close()
+        return html_layout("Ya rechazado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya rechazado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue rechazada anteriormente.</p>"))
+
+    if orden["presupuesto_aprobado"]:
+        con.close()
+        return html_layout("Ya aceptado", card_html(f"<h2 style='margin-top:0;'>Presupuesto ya aceptado</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya fue aceptada anteriormente.</p>"))
+
+    if orden["estado"] != "Esperando aprobación":
+        con.close()
+        return html_layout("No pendiente", card_html(f"<h2 style='margin-top:0;'>Esta orden ya no está pendiente</h2><p>La orden <strong>{orden['numero_orden']}</strong> ya no se encuentra esperando aprobación.</p>"))
+
+    cur.execute(
+        """
+        UPDATE ordenes
+        SET presupuesto_rechazado=TRUE,
+            fecha_rechazo=%s,
+            presupuesto_aprobado=FALSE,
+            fecha_aprobacion=NULL,
+            estado=%s
+        WHERE token_aprobacion=%s
+        """,
+        (datetime.datetime.now(), "Rechazado", token),
+    )
+
+    con.commit()
+    con.close()
+
+    equipo = f"{orden['tipo_equipo']} {orden['marca']} {orden['modelo']}"
+
+    return html_layout(
+        "Rechazado",
+        card_html(f"""
+        <h2 style="margin-top:0; color:#dc2626;">Presupuesto rechazado</h2>
+        <p>La decisión fue registrada correctamente.</p>
+        <p><strong>Orden:</strong> {orden["numero_orden"]}</p>
+        <p><strong>Equipo:</strong> {equipo}</p>
+        <p>Si desea retomar la reparación más adelante, podrá comunicarse con NR Tech.</p>
+        """)
+    )
 
 
 if __name__ == "__main__":
