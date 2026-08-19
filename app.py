@@ -423,25 +423,12 @@ def home():
 
     con = db()
     cur = con.cursor()
-
     cur.execute("""
         SELECT estado, COUNT(*) as total
         FROM ordenes
         GROUP BY estado
     """)
     estados_raw = cur.fetchall()
-
-    cur.execute("""
-        SELECT
-            COALESCE(SUM(presupuesto), 0) AS presupuestado,
-            COALESCE(SUM(cobrado), 0) AS cobrado,
-            COALESCE(SUM(costo_repuestos), 0) AS costos,
-            COALESCE(SUM(GREATEST(presupuesto - cobrado, 0)), 0) AS pendiente,
-            COALESCE(SUM(presupuesto - costo_repuestos), 0) AS margen
-        FROM ordenes
-        WHERE DATE_TRUNC('month', fecha_ingreso) = DATE_TRUNC('month', CURRENT_DATE)
-    """)
-    fin = cur.fetchone() or {}
     con.close()
 
     resumen = {
@@ -451,49 +438,141 @@ def home():
         "Esperando repuesto": 0,
         "En reparación": 0,
         "Listo para retirar": 0,
+        "Entregado": 0,
     }
     for fila in estados_raw:
         if fila["estado"] in resumen:
             resumen[fila["estado"]] = fila["total"]
 
-    def dinero(v):
-        try:
-            return f"${float(v or 0):,.0f}".replace(",", ".")
-        except Exception:
-            return "$0"
-
     contenido = f"""
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:18px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Recibidos</small><div style="font-size:27px;font-weight:800;">{resumen['Recibido en taller']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Diagnóstico</small><div style="font-size:27px;font-weight:800;">{resumen['En diagnóstico']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando aprobación</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando aprobación']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando repuesto</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando repuesto']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>En reparación</small><div style="font-size:27px;font-weight:800;">{resumen['En reparación']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Listo para retirar</small><div style="font-size:27px;font-weight:800;">{resumen['Listo para retirar']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Listos</small><div style="font-size:27px;font-weight:800;">{resumen['Listo para retirar']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Entregados</small><div style="font-size:27px;font-weight:800;">{resumen['Entregado']}</div></div>
     </div>
 
-    <div style="background:white;border:1px solid #dbeafe;border-radius:18px;padding:18px;margin-bottom:20px;box-shadow:0 8px 24px rgba(15,23,42,.05);">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
-        <div><h2 style="margin:0;font-size:19px;">💰 Resumen financiero del mes</h2><small style="color:#64748b;">Control interno del taller. No sustituye la facturación fiscal.</small></div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
-        <div style="background:#f8fafc;border-radius:12px;padding:13px;"><small>Presupuestado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('presupuestado'))}</div></div>
-        <div style="background:#f0fdf4;border-radius:12px;padding:13px;"><small>Cobrado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('cobrado'))}</div></div>
-        <div style="background:#fff7ed;border-radius:12px;padding:13px;"><small>Costos repuestos</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('costos'))}</div></div>
-        <div style="background:#fef2f2;border-radius:12px;padding:13px;"><small>Pendiente de cobrar</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('pendiente'))}</div></div>
-        <div style="background:#eff6ff;border-radius:12px;padding:13px;"><small>Margen estimado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('margen'))}</div></div>
-      </div>
-    </div>
-
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
       <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
       <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
+      <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
       <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
     </div>
     """
     return html_layout("Inicio", contenido)
+
+
+@app.get("/finanzas")
+def finanzas():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy = datetime.date.today()
+    try:
+        anio = int(request.args.get("anio", hoy.year))
+        mes = int(request.args.get("mes", hoy.month))
+    except Exception:
+        anio, mes = hoy.year, hoy.month
+    if mes < 1 or mes > 12:
+        mes = hoy.month
+
+    tope_anual = float(os.environ.get("MONOTRIBUTO_TOPE_ANUAL", "1175537"))
+    con = db(); cur = con.cursor()
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(presupuesto),0) AS facturado,
+            COALESCE(SUM(cobrado),0) AS cobrado,
+            COALESCE(SUM(costo_repuestos),0) AS costos,
+            COALESCE(SUM(GREATEST(presupuesto-cobrado,0)),0) AS pendiente,
+            COALESCE(SUM(presupuesto-costo_repuestos),0) AS margen,
+            COUNT(*) AS trabajos
+        FROM ordenes
+        WHERE fecha_entregado IS NOT NULL
+          AND EXTRACT(YEAR FROM fecha_entregado)=%s
+          AND EXTRACT(MONTH FROM fecha_entregado)=%s
+    """, (anio, mes))
+    mes_data = cur.fetchone() or {}
+
+    cur.execute("""
+        SELECT COALESCE(SUM(presupuesto),0) AS facturado_anual
+        FROM ordenes
+        WHERE fecha_entregado IS NOT NULL
+          AND EXTRACT(YEAR FROM fecha_entregado)=%s
+    """, (anio,))
+    anual = float((cur.fetchone() or {}).get("facturado_anual") or 0)
+
+    cur.execute("""
+        SELECT EXTRACT(MONTH FROM fecha_entregado)::int AS mes,
+               COALESCE(SUM(presupuesto),0) AS facturado,
+               COALESCE(SUM(costo_repuestos),0) AS costos,
+               COALESCE(SUM(presupuesto-costo_repuestos),0) AS margen,
+               COUNT(*) AS trabajos
+        FROM ordenes
+        WHERE fecha_entregado IS NOT NULL
+          AND EXTRACT(YEAR FROM fecha_entregado)=%s
+        GROUP BY 1 ORDER BY 1
+    """, (anio,))
+    por_mes = {r['mes']: r for r in cur.fetchall()}
+    con.close()
+
+    def dinero(v):
+        try: return f"${float(v or 0):,.0f}".replace(",", ".")
+        except Exception: return "$0"
+
+    nombres = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    restante = max(tope_anual-anual, 0)
+    pct = min((anual/tope_anual*100) if tope_anual else 0, 100)
+    opciones_mes = ''.join(f'<option value="{i}" {"selected" if i==mes else ""}>{nombres[i-1]}</option>' for i in range(1,13))
+    opciones_anio = ''.join(f'<option value="{y}" {"selected" if y==anio else ""}>{y}</option>' for y in range(hoy.year-2,hoy.year+2))
+
+    filas = ''
+    for i in range(1,13):
+        r = por_mes.get(i, {})
+        filas += f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{nombres[i-1]}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('facturado',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('costos',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('margen',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(r.get('trabajos',0) or 0)}</td></tr>"
+
+    contenido = f"""
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
+      <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Solo cuenta trabajos marcados como <strong>Entregados</strong>; los presupuestos pendientes no suman.</p></div>
+      <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;">🏠 Inicio</a>
+    </div>
+    <form method="get" style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
+      <div><label>Mes</label><br><select name="mes" style="padding:9px;border:1px solid #d1d5db;border-radius:9px;">{opciones_mes}</select></div>
+      <div><label>Año</label><br><select name="anio" style="padding:9px;border:1px solid #d1d5db;border-radius:9px;">{opciones_anio}</select></div>
+      <button style="padding:10px 16px;border:0;border-radius:10px;background:#2563eb;color:white;font-weight:bold;">Ver período</button>
+    </form>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:18px;">
+      <div style="background:white;border:1px solid #bfdbfe;border-radius:14px;padding:15px;"><small>Facturación bruta</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('facturado'))}</div></div>
+      <div style="background:white;border:1px solid #bbf7d0;border-radius:14px;padding:15px;"><small>Cobrado</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('cobrado'))}</div></div>
+      <div style="background:white;border:1px solid #fed7aa;border-radius:14px;padding:15px;"><small>Costo repuestos</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('costos'))}</div></div>
+      <div style="background:white;border:1px solid #fecaca;border-radius:14px;padding:15px;"><small>Pendiente de cobrar</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('pendiente'))}</div></div>
+      <div style="background:white;border:1px solid #c7d2fe;border-radius:14px;padding:15px;"><small>Ganancia estimada</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('margen'))}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>Trabajos entregados</small><div style="font-size:24px;font-weight:800;">{int(mes_data.get('trabajos') or 0)}</div></div>
+    </div>
+
+    <div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:18px;margin-bottom:18px;">
+      <h3 style="margin-top:0;">Control Monotributo {anio}</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;">
+        <div><small>Facturado en el año</small><div style="font-size:24px;font-weight:800;">{dinero(anual)}</div></div>
+        <div><small>Tope anual configurado</small><div style="font-size:24px;font-weight:800;">{dinero(tope_anual)}</div></div>
+        <div><small>Margen disponible</small><div style="font-size:24px;font-weight:800;">{dinero(restante)}</div></div>
+        <div><small>Utilizado</small><div style="font-size:24px;font-weight:800;">{pct:.1f}%</div></div>
+      </div>
+      <div style="height:14px;background:#e5e7eb;border-radius:999px;overflow:hidden;margin-top:14px;"><div style="height:100%;width:{pct:.1f}%;background:#2563eb;"></div></div>
+      <p style="font-size:12px;color:#64748b;margin-bottom:0;">El control usa la facturación bruta de trabajos entregados. El tope puede actualizarse cada año desde la configuración del servidor.</p>
+    </div>
+
+    <div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;overflow-x:auto;">
+      <h3 style="margin-top:0;">Resumen mes a mes — {anio}</h3>
+      <table style="width:100%;border-collapse:collapse;min-width:620px;"><tr style="background:#eff6ff;text-align:left;"><th style="padding:10px">Mes</th><th style="padding:10px">Facturado</th><th style="padding:10px">Costos</th><th style="padding:10px">Ganancia est.</th><th style="padding:10px">Trabajos</th></tr>{filas}</table>
+    </div>
+    """
+    return html_layout("Finanzas", contenido)
 
 
 @app.route("/crear", methods=["GET", "POST"])
