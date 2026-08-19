@@ -13,6 +13,16 @@ import secrets
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
 
+
+@app.after_request
+def evitar_cache(response):
+    # El sistema cambia datos frecuentemente. Evitamos que el navegador
+    # muestre listados viejos al volver atrás o después de actualizar.
+    response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    response.headers["Pragma"] = "no-cache"
+    response.headers["Expires"] = "0"
+    return response
+
 USER = "admin"
 PASS = "N41043406@"
 
@@ -910,6 +920,11 @@ def editar():
             <div style="margin-top:16px; padding:12px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px; color:#166534;">
               Guardar aquí <strong>no envía email</strong> al cliente.
             </div>
+
+            <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
+              <a href="/ver_ordenes" style="display:inline-block; background:#111827; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">📋 Ver órdenes</a>
+              <a href="/" style="display:inline-block; background:#e5e7eb; color:#111827; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🏠 Inicio</a>
+            </div>
             """)
         )
 
@@ -960,7 +975,7 @@ def editar():
     )
     con.commit()
     con.close()
-    return redirect(f"/buscar?q={numero}")
+    return redirect("/ver_ordenes")
 
 
 @app.route("/actualizar", methods=["GET", "POST"])
@@ -1042,7 +1057,11 @@ def actualizar():
             </form>
 
             {boton_presupuesto}
-            <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
+
+            <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:20px;">
+              <a href="/ver_ordenes" style="display:inline-block; background:#111827; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">📋 Ver órdenes</a>
+              <a href="/" style="display:inline-block; background:#e5e7eb; color:#111827; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🏠 Inicio</a>
+            </div>
             """)
         )
 
@@ -1145,7 +1164,7 @@ def actualizar():
             presupuesto_rechazado=info["presupuesto_rechazado"]
         )
 
-    return redirect(f"/actualizar?numero={numero}")
+    return redirect("/ver_ordenes")
 
 
 @app.post("/enviar_presupuesto")
