@@ -421,6 +421,18 @@ def home():
         GROUP BY estado
     """)
     estados_raw = cur.fetchall()
+
+    cur.execute("""
+        SELECT
+            COALESCE(SUM(presupuesto), 0) AS presupuestado,
+            COALESCE(SUM(cobrado), 0) AS cobrado,
+            COALESCE(SUM(costo_repuestos), 0) AS costos,
+            COALESCE(SUM(GREATEST(presupuesto - cobrado, 0)), 0) AS pendiente,
+            COALESCE(SUM(presupuesto - costo_repuestos), 0) AS margen
+        FROM ordenes
+        WHERE DATE_TRUNC('month', fecha_ingreso) = DATE_TRUNC('month', CURRENT_DATE)
+    """)
+    fin = cur.fetchone() or {}
     con.close()
 
     resumen = {
@@ -431,82 +443,47 @@ def home():
         "En reparación": 0,
         "Listo para retirar": 0,
     }
-
     for fila in estados_raw:
         if fila["estado"] in resumen:
             resumen[fila["estado"]] = fila["total"]
 
+    def dinero(v):
+        try:
+            return f"${float(v or 0):,.0f}".replace(",", ".")
+        except Exception:
+            return "$0"
+
     contenido = f"""
-    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:12px; margin-bottom:20px;">
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">Recibidos</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Recibido en taller", 0)}</p>
-      </div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:18px;">
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Recibidos</small><div style="font-size:27px;font-weight:800;">{resumen['Recibido en taller']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Diagnóstico</small><div style="font-size:27px;font-weight:800;">{resumen['En diagnóstico']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando aprobación</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando aprobación']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando repuesto</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando repuesto']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>En reparación</small><div style="font-size:27px;font-weight:800;">{resumen['En reparación']}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Listo para retirar</small><div style="font-size:27px;font-weight:800;">{resumen['Listo para retirar']}</div></div>
+    </div>
 
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">Diagnóstico</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("En diagnóstico", 0)}</p>
+    <div style="background:white;border:1px solid #dbeafe;border-radius:18px;padding:18px;margin-bottom:20px;box-shadow:0 8px 24px rgba(15,23,42,.05);">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div><h2 style="margin:0;font-size:19px;">💰 Resumen financiero del mes</h2><small style="color:#64748b;">Control interno del taller. No sustituye la facturación fiscal.</small></div>
       </div>
-
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">Esperando aprobación</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Esperando aprobación", 0)}</p>
-      </div>
-
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">Esperando repuesto</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Esperando repuesto", 0)}</p>
-      </div>
-
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">En reparación</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("En reparación", 0)}</p>
-      </div>
-
-      <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:18px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-        <h3 style="margin:0 0 6px 0;">Listo para retirar</h3>
-        <p style="margin:0; font-size:28px; font-weight:bold;">{resumen.get("Listo para retirar", 0)}</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;">
+        <div style="background:#f8fafc;border-radius:12px;padding:13px;"><small>Presupuestado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('presupuestado'))}</div></div>
+        <div style="background:#f0fdf4;border-radius:12px;padding:13px;"><small>Cobrado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('cobrado'))}</div></div>
+        <div style="background:#fff7ed;border-radius:12px;padding:13px;"><small>Costos repuestos</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('costos'))}</div></div>
+        <div style="background:#fef2f2;border-radius:12px;padding:13px;"><small>Pendiente de cobrar</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('pendiente'))}</div></div>
+        <div style="background:#eff6ff;border-radius:12px;padding:13px;"><small>Margen estimado</small><div style="font-size:22px;font-weight:800;">{dinero(fin.get('margen'))}</div></div>
       </div>
     </div>
 
     <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:16px;">
-      <a href="/crear" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">➕ Crear orden</h3>
-          <p style="margin:0; color:#6b7280;">Registrar un nuevo equipo en el taller.</p>
-        </div>
-      </a>
-
-      <a href="/buscar" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">🔎 Buscar orden</h3>
-          <p style="margin:0; color:#6b7280;">Buscar por número, nombre, email, IMEI o serie.</p>
-        </div>
-      </a>
-
-      <a href="/ver_ordenes" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">📋 Ver órdenes</h3>
-          <p style="margin:0; color:#6b7280;">Ver todas las reparaciones registradas.</p>
-        </div>
-      </a>
-
-      <a href="/clientes" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">👤 Clientes</h3>
-          <p style="margin:0; color:#6b7280;">Ver fichas e historial de cada cliente.</p>
-        </div>
-      </a>
-
-      <a href="/logout" style="text-decoration:none; color:inherit;">
-        <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
-          <h3 style="margin:0 0 8px 0;">🚪 Salir</h3>
-          <p style="margin:0; color:#6b7280;">Cerrar sesión del sistema.</p>
-        </div>
-      </a>
+      <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
+      <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
+      <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
+      <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
+      <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
     </div>
     """
-
     return html_layout("Inicio", contenido)
 
 
@@ -520,198 +497,57 @@ def crear():
             "Crear orden",
             card_html("""
             <h2 style="margin-top:0;">Crear orden</h2>
-            <p style="color:#6b7280; margin-top:-6px;">Ingreso rápido y completo del equipo.</p>
-
+            <p style="color:#6b7280;margin-top:-6px;">Rápida para usar en el mostrador. Las opciones extra se despliegan solo cuando las necesitás.</p>
             <form method="post" id="formOrden">
-              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:18px;">
+              <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;">
                 <div>
                   <h3 style="margin-top:0;">👤 Cliente</h3>
-                  <label>Nombre</label><br>
-                  <input name="nombre" required style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>Teléfono</label><br>
-                  <input name="telefono" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>Email</label><br>
-                  <input name="email" type="email" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>Dirección</label><br>
-                  <input name="direccion" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>Cédula</label><br>
-                  <input name="cedula" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
+                  <label>Nombre</label><input name="nombre" required style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;">
+                  <label>Teléfono</label><input name="telefono" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;">
+                  <label>Email</label><input name="email" type="email" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;">
+                  <details style="margin-top:8px;"><summary style="cursor:pointer;font-weight:700;color:#475569;">Más datos del cliente</summary>
+                    <div style="padding-top:10px;"><label>Dirección</label><input name="direccion" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"><label>Cédula</label><input name="cedula" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"><label>Notas</label><input name="notas" style="width:100%;padding:10px;margin:6px 0;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"></div>
+                  </details>
                 </div>
-
                 <div>
                   <h3 style="margin-top:0;">📱 Equipo</h3>
-                  <label>Tipo de equipo</label><br>
-                  <select name="tipo" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                    <option value="Celular">Celular</option>
-                    <option value="Tablet">Tablet</option>
-                    <option value="Notebook">Notebook</option>
-                    <option value="PC">PC</option>
-                    <option value="Consola">Consola</option>
-                    <option value="Otro">Otro</option>
-                  </select><br>
-
-                  <label>Marca</label><br>
-                  <input name="marca" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>Modelo</label><br>
-                  <input name="modelo" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-                  <label>IMEI / Serie</label><br>
-                  <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                    <input name="imei" placeholder="IMEI" style="width:100%; padding:10px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                    <input name="numero_serie" placeholder="N° de serie" style="width:100%; padding:10px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                  </div>
-
-                  <label style="display:block; margin-top:12px;">Accesorios recibidos</label>
-                  <input name="accesorios" placeholder="Ej: funda, cargador, sin accesorios" style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-
-                  <label>Estado general</label><br>
-                  <input name="estado_general" placeholder="Ej: pantalla rota, marcas de uso..." style="width:100%; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"><br>
+                  <label>Tipo</label><select name="tipo" style="width:100%;padding:10px;margin:6px 0 10px;border:1px solid #d1d5db;border-radius:10px;"><option>Celular</option><option>Tablet</option><option>Notebook</option><option>PC</option><option>Consola</option><option>Otro</option></select>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"><div><label>Marca</label><input name="marca" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"></div><div><label>Modelo</label><input name="modelo" style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"></div></div>
+                  <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;"><input name="imei" placeholder="IMEI" style="padding:10px;border:1px solid #d1d5db;border-radius:10px;"><input name="numero_serie" placeholder="N° serie" style="padding:10px;border:1px solid #d1d5db;border-radius:10px;"></div>
+                  <label style="display:block;margin-top:10px;">Accesorios</label><input name="accesorios" placeholder="Funda, cargador, sin accesorios..." style="width:100%;padding:10px;margin:6px 0 10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;">
+                  <label>Estado general</label><input name="estado_general" placeholder="Pantalla rota, marcas, etc." style="width:100%;padding:10px;margin:6px 0;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;">
                 </div>
               </div>
 
-              <div style="margin-top:20px; padding:18px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:14px;">
-                <h3 style="margin-top:0;">⚡ Servicio rápido</h3>
-                <label>Plantilla</label><br>
-                <select name="servicio_rapido" id="servicioRapido" onchange="aplicarServicio()" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;">
-                  <option value="">Elegir servicio...</option>
-                  <option value="Cambio de módulo / pantalla">Cambio de módulo / pantalla</option>
-                  <option value="Cambio de batería">Cambio de batería</option>
-                  <option value="Pin / conector de carga">Pin / conector de carga</option>
-                  <option value="No enciende">No enciende</option>
-                  <option value="Software / sistema">Software / sistema</option>
-                  <option value="Mantenimiento PC">Mantenimiento PC</option>
-                  <option value="Diagnóstico general">Diagnóstico general</option>
-                  <option value="Otro">Otro</option>
-                </select><br>
-
-                <div style="margin:20px 0; padding:18px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:14px; max-width:760px;">
-                <h3 style="margin-top:0;">💰 Finanzas de la orden</h3>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px;">
-                  <div>
-                    <label>Precio / presupuesto</label><br>
-                    <input id="finPrecio" value="{val('presupuesto')}" readonly style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; background:#f3f4f6; border:1px solid #d1d5db; border-radius:10px;">
-                  </div>
-                  <div>
-                    <label>Costo de repuestos</label><br>
-                    <input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                  </div>
-                  <div>
-                    <label>Mano de obra</label><br>
-                    <input id="finMano" name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                  </div>
-                  <div>
-                    <label>Cobrado / seña</label><br>
-                    <input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                  </div>
-                  <div>
-                    <label>Forma de pago</label><br>
-                    <select name="forma_pago" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                      <option value="" {'selected' if not x['forma_pago'] else ''}>Sin definir</option>
-                      <option value="Efectivo" {'selected' if x['forma_pago']=='Efectivo' else ''}>Efectivo</option>
-                      <option value="Transferencia" {'selected' if x['forma_pago']=='Transferencia' else ''}>Transferencia</option>
-                      <option value="Débito" {'selected' if x['forma_pago']=='Débito' else ''}>Débito</option>
-                      <option value="Crédito" {'selected' if x['forma_pago']=='Crédito' else ''}>Crédito</option>
-                      <option value="Mixto" {'selected' if x['forma_pago']=='Mixto' else ''}>Mixto</option>
-                    </select>
-                  </div>
-                </div>
-                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:14px;">
-                  <div style="padding:12px; background:white; border:1px solid #e5e7eb; border-radius:10px;"><small>Saldo pendiente</small><br><strong id="finSaldo">$0</strong></div>
-                  <div style="padding:12px; background:white; border:1px solid #e5e7eb; border-radius:10px;"><small>Margen estimado</small><br><strong id="finMargen">$0</strong></div>
-                </div>
-                <p style="font-size:12px; color:#6b7280; margin-bottom:0;">El margen se calcula como precio cobrado al cliente menos costo de repuestos. La mano de obra queda registrada aparte.</p>
-              </div>
-
-              <label>Falla declarada por el cliente</label><br>
-                <textarea name="falla_cliente" id="fallaCliente" rows="3" style="width:100%; max-width:760px; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"></textarea><br>
-
-                <label>Fecha estimada de entrega</label><br>
-                <input type="date" name="fecha_entrega" style="width:100%; max-width:260px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-              </div>
-
-              <div style="margin-top:20px; padding:18px; background:#fff7ed; border:1px solid #fed7aa; border-radius:14px;">
-                <h3 style="margin-top:0;">🔐 Acceso al equipo</h3>
-                <label>Tipo de bloqueo</label><br>
-                <select name="bloqueo_tipo" id="bloqueoTipo" onchange="mostrarBloqueo()" style="width:100%; max-width:300px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;">
-                  <option value="Sin bloqueo">Sin bloqueo</option>
-                  <option value="PIN / clave">PIN / clave</option>
-                  <option value="Patrón">Patrón</option>
+              <div style="margin-top:18px;padding:16px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;">
+                <h3 style="margin:0 0 10px;">⚡ Servicio</h3>
+                <select name="servicio_rapido" id="servicioRapido" onchange="aplicarServicio()" style="width:100%;max-width:520px;padding:10px;border:1px solid #d1d5db;border-radius:10px;">
+                  <option value="">Elegir plantilla...</option><option>Cambio de módulo / pantalla</option><option>Cambio de batería</option><option>Pin / conector de carga</option><option>No enciende</option><option>Software / sistema</option><option>Mantenimiento PC</option><option>Diagnóstico general</option><option>Otro</option>
                 </select>
-
-                <div id="bloqueoClave" style="display:none; margin-top:8px;">
-                  <label>PIN / clave</label><br>
-                  <input name="clave_bloqueo" autocomplete="off" style="width:100%; max-width:300px; padding:10px; margin-top:6px; border:1px solid #d1d5db; border-radius:10px;">
-                </div>
-
-                <div id="bloqueoPatron" style="display:none; margin-top:12px;">
-                  <input type="hidden" name="patron_bloqueo" id="patronBloqueo">
-                  <div id="patronGrid" style="display:grid; grid-template-columns:repeat(3,56px); gap:10px; width:max-content; margin:8px 0;">
-                    <button type="button" onclick="puntoPatron(1,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">1</button>
-                    <button type="button" onclick="puntoPatron(2,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">2</button>
-                    <button type="button" onclick="puntoPatron(3,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">3</button>
-                    <button type="button" onclick="puntoPatron(4,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">4</button>
-                    <button type="button" onclick="puntoPatron(5,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">5</button>
-                    <button type="button" onclick="puntoPatron(6,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">6</button>
-                    <button type="button" onclick="puntoPatron(7,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">7</button>
-                    <button type="button" onclick="puntoPatron(8,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">8</button>
-                    <button type="button" onclick="puntoPatron(9,this)" style="width:56px;height:56px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:bold;">9</button>
-                  </div>
-                  <div id="patronTexto" style="font-size:13px; color:#6b7280; margin-bottom:8px;">Patrón: -</div>
-                  <button type="button" onclick="limpiarPatron()" style="background:#e5e7eb;border:none;padding:8px 12px;border-radius:9px;cursor:pointer;">Limpiar patrón</button>
-                </div>
+                <textarea name="falla_cliente" id="fallaCliente" rows="2" placeholder="Falla declarada por el cliente" style="width:100%;max-width:760px;padding:10px;margin-top:10px;box-sizing:border-box;border:1px solid #d1d5db;border-radius:10px;"></textarea>
               </div>
 
-              <label style="display:flex; align-items:center; gap:10px; margin:18px 0; max-width:620px; padding:12px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px;">
-                <input type="checkbox" name="enviar_email_ingreso" value="1" style="width:18px; height:18px;">
-                <span><strong>Enviar confirmación de ingreso por email</strong><br><small style="color:#6b7280;">Solo se envía si lo marcás.</small></span>
-              </label>
+              <details style="margin-top:14px;padding:14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;">
+                <summary style="cursor:pointer;font-weight:800;">🔐 Acceso al equipo</summary>
+                <div style="padding-top:12px;"><select name="bloqueo_tipo" id="bloqueoTipo" onchange="mostrarBloqueo()" style="padding:10px;border:1px solid #d1d5db;border-radius:10px;"><option>Sin bloqueo</option><option>PIN / clave</option><option>Patrón</option></select>
+                <div id="bloqueoClave" style="display:none;margin-top:10px;"><input name="clave_bloqueo" autocomplete="off" placeholder="PIN / clave" style="padding:10px;border:1px solid #d1d5db;border-radius:10px;"></div>
+                <div id="bloqueoPatron" style="display:none;margin-top:12px;"><input type="hidden" name="patron_bloqueo" id="patronBloqueo"><div id="patronGrid" style="display:grid;grid-template-columns:repeat(3,52px);gap:9px;width:max-content;">
+                  <button type="button" onclick="puntoPatron(1,this)" class="punto">1</button><button type="button" onclick="puntoPatron(2,this)" class="punto">2</button><button type="button" onclick="puntoPatron(3,this)" class="punto">3</button><button type="button" onclick="puntoPatron(4,this)" class="punto">4</button><button type="button" onclick="puntoPatron(5,this)" class="punto">5</button><button type="button" onclick="puntoPatron(6,this)" class="punto">6</button><button type="button" onclick="puntoPatron(7,this)" class="punto">7</button><button type="button" onclick="puntoPatron(8,this)" class="punto">8</button><button type="button" onclick="puntoPatron(9,this)" class="punto">9</button>
+                </div><div id="patronTexto" style="font-size:13px;color:#6b7280;margin:8px 0;">Patrón: -</div><button type="button" onclick="limpiarPatron()" style="border:0;padding:8px 11px;border-radius:8px;">Limpiar</button></div></div>
+              </details>
 
-              <button type="submit" style="background:#2563eb; color:white; border:none; padding:13px 20px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar orden</button>
-              <a href="/" style="margin-left:12px; color:#2563eb; font-weight:bold; text-decoration:none;">Cancelar</a>
+              <details style="margin-top:14px;padding:14px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;"><summary style="cursor:pointer;font-weight:700;">📅 Entrega y comunicación</summary><div style="padding-top:10px;"><label>Fecha estimada</label><br><input type="date" name="fecha_entrega" style="padding:10px;margin:6px 0;border:1px solid #d1d5db;border-radius:10px;"><label style="display:flex;gap:8px;align-items:center;margin-top:10px;"><input type="checkbox" name="enviar_email_ingreso" value="1"> Enviar confirmación de ingreso por email</label></div></details>
+
+              <div style="margin-top:18px;"><button type="submit" style="background:#2563eb;color:white;border:0;padding:13px 20px;border-radius:12px;font-weight:800;">Guardar orden</button><a href="/" style="margin-left:12px;color:#2563eb;font-weight:700;text-decoration:none;">Cancelar</a></div>
             </form>
-
+            <style>.punto{width:52px;height:52px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:800;cursor:pointer}</style>
             <script>
-              const plantillas = {
-                "Cambio de módulo / pantalla": "Cliente declara pantalla rota, sin imagen, con manchas, líneas, parpadeo o falla de táctil.",
-                "Cambio de batería": "Cliente declara poca duración de batería, apagados inesperados o batería degradada.",
-                "Pin / conector de carga": "Cliente declara que el equipo no carga, carga intermitente o presenta juego en el conector.",
-                "No enciende": "Cliente declara que el equipo no enciende o no da señales de funcionamiento.",
-                "Software / sistema": "Cliente solicita revisión de software, sistema operativo, lentitud, errores o configuración.",
-                "Mantenimiento PC": "Cliente solicita mantenimiento general, limpieza interna y control de temperaturas.",
-                "Diagnóstico general": "Cliente solicita diagnóstico técnico para determinar la falla del equipo."
-              };
-
-              function aplicarServicio(){
-                const servicio = document.getElementById('servicioRapido').value;
-                const falla = document.getElementById('fallaCliente');
-                if (plantillas[servicio] && !falla.value.trim()) falla.value = plantillas[servicio];
-              }
-
-              let patron = [];
-              function mostrarBloqueo(){
-                const tipo = document.getElementById('bloqueoTipo').value;
-                document.getElementById('bloqueoClave').style.display = tipo === 'PIN / clave' ? 'block' : 'none';
-                document.getElementById('bloqueoPatron').style.display = tipo === 'Patrón' ? 'block' : 'none';
-              }
-              function puntoPatron(n, btn){
-                if (patron.includes(n)) return;
-                patron.push(n);
-                btn.style.background = '#0ea5e9';
-                btn.style.color = 'white';
-                document.getElementById('patronBloqueo').value = patron.join('-');
-                document.getElementById('patronTexto').innerText = 'Patrón: ' + patron.join(' → ');
-              }
-              function limpiarPatron(){
-                patron = [];
-                document.getElementById('patronBloqueo').value = '';
-                document.getElementById('patronTexto').innerText = 'Patrón: -';
-                document.querySelectorAll('#patronGrid button').forEach(b => { b.style.background='white'; b.style.color='#111827'; });
-              }
+              const plantillas={"Cambio de módulo / pantalla":"Cliente declara pantalla rota, sin imagen, con manchas, líneas, parpadeo o falla de táctil.","Cambio de batería":"Cliente declara poca duración de batería, apagados inesperados o batería degradada.","Pin / conector de carga":"Cliente declara que el equipo no carga, carga intermitente o presenta juego en el conector.","No enciende":"Cliente declara que el equipo no enciende o no da señales de funcionamiento.","Software / sistema":"Cliente solicita revisión de software, sistema operativo, lentitud, errores o configuración.","Mantenimiento PC":"Cliente solicita mantenimiento general, limpieza interna y control de temperaturas.","Diagnóstico general":"Cliente solicita diagnóstico técnico para determinar la falla del equipo."};
+              function aplicarServicio(){const s=document.getElementById('servicioRapido').value,f=document.getElementById('fallaCliente');if(plantillas[s]&&!f.value.trim())f.value=plantillas[s];}
+              let patron=[];
+              function mostrarBloqueo(){const t=document.getElementById('bloqueoTipo').value;document.getElementById('bloqueoClave').style.display=t==='PIN / clave'?'block':'none';document.getElementById('bloqueoPatron').style.display=t==='Patrón'?'block':'none';}
+              function puntoPatron(n,b){if(patron.includes(n))return;patron.push(n);b.style.background='#0ea5e9';b.style.color='white';document.getElementById('patronBloqueo').value=patron.join('-');document.getElementById('patronTexto').innerText='Patrón: '+patron.join(' → ');}
+              function limpiarPatron(){patron=[];document.getElementById('patronBloqueo').value='';document.getElementById('patronTexto').innerText='Patrón: -';document.querySelectorAll('#patronGrid button').forEach(b=>{b.style.background='white';b.style.color='black';});}
             </script>
             """)
         )
@@ -802,6 +638,8 @@ def crear():
         )
 
     return redirect(f"/editar?numero={numero_orden}")
+
+
 
 
 @app.get("/buscar")
@@ -970,307 +808,81 @@ def editar():
         numero = request.args.get("numero", "").strip()
         if not numero:
             return redirect("/buscar")
-
-        con = db()
-        cur = con.cursor()
-        cur.execute(
-            """
-            SELECT o.*, c.nombre, c.telefono, c.email, c.direccion, c.cedula, c.notas
-            FROM ordenes o
-            JOIN clientes c ON o.cliente_id=c.id
-            WHERE o.numero_orden=%s
-            """,
-            (numero,),
-        )
-        x = cur.fetchone()
-        con.close()
-
+        con = db(); cur = con.cursor()
+        cur.execute("""SELECT o.*, c.nombre, c.telefono, c.email, c.direccion, c.cedula, c.notas FROM ordenes o JOIN clientes c ON o.cliente_id=c.id WHERE o.numero_orden=%s""", (numero,))
+        x = cur.fetchone(); con.close()
         if not x:
-            return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+            return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
 
-        def val(campo):
-            return str(x[campo] or "").replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+        def val(c):
+            return escape(str(x[c] or ""))
+        servicios=["", "Cambio de módulo / pantalla","Cambio de batería","Pin / conector de carga","No enciende","Software / sistema","Mantenimiento PC","Diagnóstico general","Otro"]
+        servicio_opts="".join(f'<option value="{escape(s)}" {"selected" if str(x["servicio_rapido"] or "")==s else ""}>{escape(s or "Elegir plantilla...")}</option>' for s in servicios)
+        bloqueos=["Sin bloqueo","PIN / clave","Patrón"]
+        bloqueo_opts="".join(f'<option value="{b}" {"selected" if str(x["bloqueo_tipo"] or "Sin bloqueo")==b else ""}>{b}</option>' for b in bloqueos)
+        formas=["","Efectivo","Transferencia","Débito","Crédito","Mixto"]
+        forma_opts="".join(f'<option value="{f}" {"selected" if str(x["forma_pago"] or "")==f else ""}>{f or "Sin definir"}</option>' for f in formas)
 
-        return html_layout(
-            "Editar orden",
-            card_html(f"""
-            <h2 style="margin-top:0;">Editar orden {val('numero_orden')}</h2>
-            <p style="color:#6b7280; margin-top:-6px;">Corregí los datos sin enviar ningún email al cliente.</p>
-
-            <form method="post">
-              <input type="hidden" name="numero" value="{val('numero_orden')}">
-
-              <h3>Cliente</h3>
-              <label>Nombre</label><br>
-              <input name="nombre" value="{val('nombre')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Teléfono</label><br>
-              <input name="telefono" value="{val('telefono')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Email</label><br>
-              <input name="email" type="email" value="{val('email')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Dirección</label><br>
-              <input name="direccion" value="{val('direccion')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Cédula</label><br>
-              <input name="cedula" value="{val('cedula')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Notas cliente</label><br>
-              <input name="notas" value="{val('notas')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <h3>Equipo</h3>
-              <label>Tipo de equipo</label><br>
-              <input name="tipo" value="{val('tipo_equipo')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Marca</label><br>
-              <input name="marca" value="{val('marca')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Modelo</label><br>
-              <input name="modelo" value="{val('modelo')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>N° de serie</label><br>
-              <input name="numero_serie" value="{val('numero_serie')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>IMEI</label><br>
-              <input name="imei" value="{val('imei')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Estado general</label><br>
-              <input name="estado_general" value="{val('estado_general')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Accesorios recibidos</label><br>
-              <input name="accesorios" value="{val('accesorios')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Servicio rápido / plantilla</label><br>
-              <input name="servicio_rapido" value="{val('servicio_rapido')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Fecha estimada de entrega</label><br>
-              <input type="date" name="fecha_entrega" value="{val('fecha_entrega')}" style="width:100%; max-width:260px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Tipo de bloqueo</label><br>
-              <input name="bloqueo_tipo" value="{val('bloqueo_tipo')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>PIN / clave</label><br>
-              <input name="clave_bloqueo" value="{val('clave_bloqueo')}" autocomplete="off" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Patrón</label><br>
-              <input name="patron_bloqueo" value="{val('patron_bloqueo')}" placeholder="Ej: 1-2-5-8" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
-
-              <label>Falla declarada por el cliente</label><br>
-              <textarea name="falla_cliente" rows="3" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;">{val('falla_cliente')}</textarea><br>
-
-              <label>Observaciones</label><br>
-              <textarea name="observaciones" rows="3" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;">{val('observaciones')}</textarea><br>
-
-              <h3 style="margin-top:22px;">Finanzas de la orden</h3>
-              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; max-width:760px; margin-bottom:14px;">
-                <div>
-                  <label>Costo de repuestos</label><br>
-                  <input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                </div>
-                <div>
-                  <label>Mano de obra</label><br>
-                  <input id="finMano" name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                </div>
-                <div>
-                  <label>Cobrado / seña</label><br>
-                  <input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                </div>
-                <div>
-                  <label>Forma de pago</label><br>
-                  <select name="forma_pago" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
-                    <option value="" {'selected' if not x['forma_pago'] else ''}>Sin definir</option>
-                    <option value="Efectivo" {'selected' if x['forma_pago']=='Efectivo' else ''}>Efectivo</option>
-                    <option value="Transferencia" {'selected' if x['forma_pago']=='Transferencia' else ''}>Transferencia</option>
-                    <option value="Débito" {'selected' if x['forma_pago']=='Débito' else ''}>Débito</option>
-                    <option value="Crédito" {'selected' if x['forma_pago']=='Crédito' else ''}>Crédito</option>
-                    <option value="Mixto" {'selected' if x['forma_pago']=='Mixto' else ''}>Mixto</option>
-                  </select>
-                </div>
-              </div>
-              <div style="display:flex; flex-wrap:wrap; gap:12px; max-width:760px; margin-bottom:18px;">
-                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;"><strong>Saldo:</strong> <span id="finSaldo">$0</span></div>
-                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;"><strong>Margen estimado:</strong> <span id="finMargen">$0</span></div>
-              </div>
-              <input id="finPrecio" type="hidden" value="{val('presupuesto')}">
-
-              <button type="submit" style="background:#0f766e; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar correcciones</button>
-              <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:12px; color:#2563eb; font-weight:bold; text-decoration:none;">Actualizar reparación</a>
-            </form>
-
-            <div style="margin-top:16px; padding:12px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px; color:#166534;">
-              Guardar aquí <strong>no envía email</strong> al cliente.
+        contenido=f"""
+        <h2 style="margin-top:0;">Editar {val('numero_orden')}</h2>
+        <p style="color:#6b7280;margin-top:-6px;">Todo editable, pero ordenado en bloques desplegables.</p>
+        <form method="post"><input type="hidden" name="numero" value="{val('numero_orden')}">
+          <details open style="padding:14px;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:800;">👤 Cliente y equipo</summary>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;padding-top:12px;">
+              <div><label>Nombre</label><input name="nombre" value="{val('nombre')}" style="width:100%;padding:9px;margin:5px 0;box-sizing:border-box;"><label>Teléfono</label><input name="telefono" value="{val('telefono')}" style="width:100%;padding:9px;margin:5px 0;box-sizing:border-box;"><label>Email</label><input name="email" value="{val('email')}" style="width:100%;padding:9px;margin:5px 0;box-sizing:border-box;"></div>
+              <div><label>Tipo</label><input name="tipo" value="{val('tipo_equipo')}" style="width:100%;padding:9px;margin:5px 0;box-sizing:border-box;"><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;"><input name="marca" value="{val('marca')}" placeholder="Marca" style="padding:9px;"><input name="modelo" value="{val('modelo')}" placeholder="Modelo" style="padding:9px;"></div><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;"><input name="imei" value="{val('imei')}" placeholder="IMEI" style="padding:9px;"><input name="numero_serie" value="{val('numero_serie')}" placeholder="Serie" style="padding:9px;"></div></div>
             </div>
+          </details>
 
-            <script>
-              function calcularFinanzas(){{
-                const precio = parseFloat(document.getElementById('finPrecio')?.value || 0);
-                const costo = parseFloat(document.getElementById('finCosto')?.value || 0);
-                const cobrado = parseFloat(document.getElementById('finCobrado')?.value || 0);
-                const saldo = Math.max(precio - cobrado, 0);
-                const margen = precio - costo;
-                if(document.getElementById('finSaldo')) document.getElementById('finSaldo').innerText = '$' + saldo.toLocaleString('es-UY');
-                if(document.getElementById('finMargen')) document.getElementById('finMargen').innerText = '$' + margen.toLocaleString('es-UY');
-              }}
-              calcularFinanzas();
-            </script>
+          <details open style="padding:14px;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:800;">⚡ Servicio y estado</summary><div style="padding-top:12px;">
+            <select name="servicio_rapido" id="servicioRapido" onchange="aplicarServicio()" style="padding:9px;max-width:420px;width:100%;">{servicio_opts}</select>
+            <textarea name="falla_cliente" id="fallaCliente" rows="2" style="display:block;width:100%;max-width:760px;padding:9px;margin-top:8px;box-sizing:border-box;">{val('falla_cliente')}</textarea>
+            <input name="estado_general" value="{val('estado_general')}" placeholder="Estado general" style="width:100%;max-width:520px;padding:9px;margin-top:8px;box-sizing:border-box;">
+            <input name="accesorios" value="{val('accesorios')}" placeholder="Accesorios" style="width:100%;max-width:520px;padding:9px;margin-top:8px;box-sizing:border-box;">
+          </div></details>
 
-            <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
-              <a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="display:inline-block; background:#7c3aed; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🖨️ Imprimir etiquetas</a>
-              <a href="/ver_ordenes" style="display:inline-block; background:#111827; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">📋 Ver órdenes</a>
-              <a href="/" style="display:inline-block; background:#e5e7eb; color:#111827; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🏠 Inicio</a>
-            </div>
-            """)
-        )
+          <details style="padding:14px;background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:800;">🔐 Acceso al equipo</summary><div style="padding-top:12px;">
+            <select name="bloqueo_tipo" id="bloqueoTipo" onchange="mostrarBloqueo()" style="padding:9px;">{bloqueo_opts}</select>
+            <div id="bloqueoClave" style="display:none;margin-top:8px;"><input name="clave_bloqueo" value="{val('clave_bloqueo')}" autocomplete="off" placeholder="PIN / clave" style="padding:9px;"></div>
+            <div id="bloqueoPatron" style="display:none;margin-top:10px;"><input type="hidden" name="patron_bloqueo" id="patronBloqueo" value="{val('patron_bloqueo')}"><div id="patronGrid" style="display:grid;grid-template-columns:repeat(3,50px);gap:8px;width:max-content;">{''.join(f'<button type="button" onclick="puntoPatron({n},this)" class="punto" data-n="{n}">{n}</button>' for n in range(1,10))}</div><div id="patronTexto" style="font-size:13px;color:#6b7280;margin:8px 0;"></div><button type="button" onclick="limpiarPatron()">Limpiar</button></div>
+          </div></details>
 
-    numero = request.form.get("numero", "").strip()
-    con = db()
-    cur = con.cursor()
-    cur.execute("SELECT cliente_id FROM ordenes WHERE numero_orden=%s", (numero,))
-    orden = cur.fetchone()
+          <details style="padding:14px;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:800;">📝 Datos adicionales</summary><div style="padding-top:10px;display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px;"><input name="direccion" value="{val('direccion')}" placeholder="Dirección" style="padding:9px;"><input name="cedula" value="{val('cedula')}" placeholder="Cédula" style="padding:9px;"><input name="notas" value="{val('notas')}" placeholder="Notas cliente" style="padding:9px;"><input type="date" name="fecha_entrega" value="{val('fecha_entrega')}" style="padding:9px;"></div><textarea name="observaciones" rows="2" placeholder="Observaciones" style="width:100%;max-width:760px;padding:9px;margin-top:10px;box-sizing:border-box;">{val('observaciones')}</textarea></details>
+
+          <details style="padding:14px;background:#f8fafc;border:1px solid #dbeafe;border-radius:14px;margin-bottom:14px;"><summary style="cursor:pointer;font-weight:800;">💰 Finanzas de la orden</summary><div style="padding-top:12px;display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;max-width:850px;">
+            <div><small>Presupuesto</small><div style="font-weight:800;font-size:20px;">${val('presupuesto')}</div></div>
+            <div><label>Costo repuestos</label><input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%;padding:9px;box-sizing:border-box;"></div>
+            <div><label>Mano de obra</label><input name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" style="width:100%;padding:9px;box-sizing:border-box;"></div>
+            <div><label>Cobrado / seña</label><input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%;padding:9px;box-sizing:border-box;"></div>
+            <div><label>Forma pago</label><select name="forma_pago" style="width:100%;padding:9px;">{forma_opts}</select></div>
+          </div><input id="finPrecio" type="hidden" value="{val('presupuesto')}"><div style="margin-top:10px;"><strong>Saldo:</strong> <span id="finSaldo"></span> &nbsp; | &nbsp; <strong>Margen:</strong> <span id="finMargen"></span></div></details>
+
+          <button type="submit" style="background:#0f766e;color:white;border:0;padding:12px 18px;border-radius:11px;font-weight:800;">Guardar correcciones</button>
+          <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:10px;color:#2563eb;font-weight:700;text-decoration:none;">Actualizar reparación</a>
+        </form>
+        <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;"><a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="background:#7c3aed;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🖨️ Etiquetas</a><a href="/ver_ordenes" style="background:#111827;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">📋 Órdenes</a><a href="/" style="background:#e5e7eb;color:#111;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🏠 Inicio</a></div>
+        <style>.punto{{width:50px;height:50px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:800;cursor:pointer}}</style>
+        <script>
+          const plantillas={{"Cambio de módulo / pantalla":"Cliente declara pantalla rota, sin imagen, con manchas, líneas, parpadeo o falla de táctil.","Cambio de batería":"Cliente declara poca duración de batería, apagados inesperados o batería degradada.","Pin / conector de carga":"Cliente declara que el equipo no carga, carga intermitente o presenta juego en el conector.","No enciende":"Cliente declara que el equipo no enciende o no da señales de funcionamiento.","Software / sistema":"Cliente solicita revisión de software, sistema operativo, lentitud, errores o configuración.","Mantenimiento PC":"Cliente solicita mantenimiento general, limpieza interna y control de temperaturas.","Diagnóstico general":"Cliente solicita diagnóstico técnico para determinar la falla del equipo."}};
+          function aplicarServicio(){{const s=document.getElementById('servicioRapido').value,f=document.getElementById('fallaCliente');if(plantillas[s]&&!f.value.trim())f.value=plantillas[s];}}
+          let patron=(document.getElementById('patronBloqueo').value||'').split('-').map(Number).filter(Boolean);
+          function pintarPatron(){{document.querySelectorAll('#patronGrid button').forEach(b=>{{const n=Number(b.dataset.n);b.style.background=patron.includes(n)?'#0ea5e9':'white';b.style.color=patron.includes(n)?'white':'black';}});document.getElementById('patronTexto').innerText='Patrón: '+(patron.length?patron.join(' → '):'-');}}
+          function mostrarBloqueo(){{const tp=document.getElementById('bloqueoTipo').value;document.getElementById('bloqueoClave').style.display=tp==='PIN / clave'?'block':'none';document.getElementById('bloqueoPatron').style.display=tp==='Patrón'?'block':'none';}}
+          function puntoPatron(n,b){{if(patron.includes(n))return;patron.push(n);document.getElementById('patronBloqueo').value=patron.join('-');pintarPatron();}}
+          function limpiarPatron(){{patron=[];document.getElementById('patronBloqueo').value='';pintarPatron();}}
+          function calcularFinanzas(){{const p=parseFloat(document.getElementById('finPrecio').value||0),c=parseFloat(document.getElementById('finCosto').value||0),co=parseFloat(document.getElementById('finCobrado').value||0);document.getElementById('finSaldo').innerText='$'+Math.max(p-co,0).toLocaleString('es-UY');document.getElementById('finMargen').innerText='$'+(p-c).toLocaleString('es-UY');}}
+          mostrarBloqueo();pintarPatron();calcularFinanzas();
+        </script>
+        """
+        return html_layout("Editar orden", card_html(contenido))
+
+    numero=request.form.get("numero","").strip(); con=db(); cur=con.cursor(); cur.execute("SELECT cliente_id FROM ordenes WHERE numero_orden=%s",(numero,)); orden=cur.fetchone()
     if not orden:
-        con.close()
-        return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
-
-    cliente_id = orden["cliente_id"]
-    cur.execute(
-        """
-        UPDATE clientes
-        SET nombre=%s, telefono=%s, email=%s, direccion=%s, cedula=%s, notas=%s
-        WHERE id=%s
-        """,
-        (
-            request.form.get("nombre", "").strip(),
-            request.form.get("telefono", "").strip(),
-            request.form.get("email", "").strip(),
-            request.form.get("direccion", "").strip(),
-            request.form.get("cedula", "").strip(),
-            request.form.get("notas", "").strip(),
-            cliente_id,
-        ),
-    )
-    cur.execute(
-        """
-        UPDATE ordenes
-        SET tipo_equipo=%s, marca=%s, modelo=%s, numero_serie=%s, imei=%s,
-            estado_general=%s, accesorios=%s, servicio_rapido=%s, fecha_entrega=%s,
-            bloqueo_tipo=%s, clave_bloqueo=%s, patron_bloqueo=%s,
-            costo_repuestos=%s, mano_obra=%s, cobrado=%s, forma_pago=%s,
-            falla_cliente=%s, observaciones=%s
-        WHERE numero_orden=%s
-        """,
-        (
-            request.form.get("tipo", "").strip(),
-            request.form.get("marca", "").strip(),
-            request.form.get("modelo", "").strip(),
-            request.form.get("numero_serie", "").strip(),
-            request.form.get("imei", "").strip(),
-            request.form.get("estado_general", "").strip(),
-            request.form.get("accesorios", "").strip(),
-            request.form.get("servicio_rapido", "").strip(),
-            request.form.get("fecha_entrega", "").strip() or None,
-            request.form.get("bloqueo_tipo", "").strip(),
-            request.form.get("clave_bloqueo", "").strip(),
-            request.form.get("patron_bloqueo", "").strip(),
-            request.form.get("costo_repuestos", "0").strip() or 0,
-            request.form.get("mano_obra", "0").strip() or 0,
-            request.form.get("cobrado", "0").strip() or 0,
-            request.form.get("forma_pago", "").strip(),
-            request.form.get("falla_cliente", "").strip(),
-            request.form.get("observaciones", "").strip(),
-            numero,
-        ),
-    )
-    con.commit()
-    con.close()
-    return redirect("/ver_ordenes")
-
-
-@app.get("/etiqueta")
-def etiqueta():
-    if not session.get("login"):
-        return redirect("/login")
-
-    numero = request.args.get("numero", "").strip()
-    if not numero:
-        return redirect("/ver_ordenes")
-
-    con = db()
-    cur = con.cursor()
-    cur.execute(
-        """
-        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.imei, o.numero_serie,
-               o.accesorios, o.fecha_ingreso, c.nombre
-        FROM ordenes o
-        JOIN clientes c ON o.cliente_id=c.id
-        WHERE o.numero_orden=%s
-        """,
-        (numero,),
-    )
-    x = cur.fetchone()
-    con.close()
-
-    if not x:
-        return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
-
-    n = escape(str(x["numero_orden"] or ""))
-    cliente = escape(str(x["nombre"] or ""))
-    equipo = escape(" ".join(str(v or "").strip() for v in [x["tipo_equipo"], x["marca"], x["modelo"]] if str(v or "").strip()))
-    imei = escape(str(x["imei"] or ""))
-    serie = escape(str(x["numero_serie"] or ""))
-    accesorios = escape(str(x["accesorios"] or "Sin accesorios declarados"))
-    fecha = escape(str(x["fecha_ingreso"] or ""))
-
-    # Importante: por privacidad, la etiqueta nunca imprime PIN, clave ni patrón.
-    return f"""
-    <!doctype html>
-    <html>
-    <head>
-      <meta charset="utf-8">
-      <title>Etiquetas {n}</title>
-      <style>
-        body {{ font-family: Arial, sans-serif; margin: 18px; color:#111; }}
-        .acciones {{ margin-bottom:16px; }}
-        .acciones button, .acciones a {{ padding:10px 14px; margin-right:8px; border-radius:9px; border:0; text-decoration:none; font-weight:bold; cursor:pointer; }}
-        .print {{ background:#111827; color:#fff; }}
-        .back {{ background:#e5e7eb; color:#111; }}
-        .label {{ width:72mm; min-height:38mm; border:1px dashed #333; padding:4mm; margin-bottom:6mm; box-sizing:border-box; page-break-inside:avoid; }}
-        .nr {{ font-size:17px; font-weight:800; margin-bottom:4px; }}
-        .tipo {{ font-size:12px; font-weight:bold; text-transform:uppercase; color:#444; }}
-        .line {{ font-size:12px; margin-top:4px; }}
-        .small {{ font-size:10px; color:#555; margin-top:5px; }}
-        @media print {{
-          body {{ margin:0; }}
-          .acciones {{ display:none; }}
-          .label {{ border:1px solid #000; margin:0 0 3mm 0; }}
-        }}
-      </style>
-    </head>
-    <body>
-      <div class="acciones">
-        <button class="print" onclick="window.print()">🖨️ Imprimir</button>
-        <a class="back" href="/editar?numero={n}">Volver a la orden</a>
-      </div>
-
-      <div class="label">
-        <div class="tipo">NR Tech · Equipo</div>
-        <div class="nr">{n}</div>
-        <div class="line"><strong>Cliente:</strong> {cliente}</div>
-        <div class="line"><strong>Equipo:</strong> {equipo}</div>
-        <div class="line"><strong>IMEI:</strong> {imei or '-'} &nbsp; <strong>Serie:</strong> {serie or '-'}</div>
-        <div class="small">Ingreso: {fecha} · No contiene claves de acceso</div>
-      </div>
-
-      <div class="label">
-        <div class="tipo">NR Tech · Accesorios</div>
-        <div class="nr">{n}</div>
-        <div class="line"><strong>Cliente:</strong> {cliente}</div>
-        <div class="line"><strong>Accesorios:</strong> {accesorios}</div>
-        <div class="small">Mantener junto al equipo identificado con la misma orden.</div>
-      </div>
-    </body>
-    </html>
-    """
+        con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+    cliente_id=orden["cliente_id"]
+    cur.execute("""UPDATE clientes SET nombre=%s,telefono=%s,email=%s,direccion=%s,cedula=%s,notas=%s WHERE id=%s""",(request.form.get("nombre","").strip(),request.form.get("telefono","").strip(),request.form.get("email","").strip(),request.form.get("direccion","").strip(),request.form.get("cedula","").strip(),request.form.get("notas","").strip(),cliente_id))
+    cur.execute("""UPDATE ordenes SET tipo_equipo=%s,marca=%s,modelo=%s,numero_serie=%s,imei=%s,estado_general=%s,accesorios=%s,servicio_rapido=%s,fecha_entrega=%s,bloqueo_tipo=%s,clave_bloqueo=%s,patron_bloqueo=%s,costo_repuestos=%s,mano_obra=%s,cobrado=%s,forma_pago=%s,falla_cliente=%s,observaciones=%s WHERE numero_orden=%s""",(request.form.get("tipo","").strip(),request.form.get("marca","").strip(),request.form.get("modelo","").strip(),request.form.get("numero_serie","").strip(),request.form.get("imei","").strip(),request.form.get("estado_general","").strip(),request.form.get("accesorios","").strip(),request.form.get("servicio_rapido","").strip(),request.form.get("fecha_entrega","").strip() or None,request.form.get("bloqueo_tipo","").strip(),request.form.get("clave_bloqueo","").strip(),request.form.get("patron_bloqueo","").strip(),request.form.get("costo_repuestos","0").strip() or 0,request.form.get("mano_obra","0").strip() or 0,request.form.get("cobrado","0").strip() or 0,request.form.get("forma_pago","").strip(),request.form.get("falla_cliente","").strip(),request.form.get("observaciones","").strip(),numero))
+    con.commit(); con.close(); return redirect("/ver_ordenes")
 
 
 @app.route("/actualizar", methods=["GET", "POST"])
