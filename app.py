@@ -747,6 +747,7 @@ def buscar():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/editar?numero={r['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
             <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
           </td>
         </tr>
@@ -807,6 +808,7 @@ def ver_ordenes():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{pres}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
+            <a href="/editar?numero={o['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
           </td>
         </tr>
@@ -818,6 +820,149 @@ def ver_ordenes():
     return html_layout("Todas las órdenes", card_html(html))
 
 
+@app.route("/editar", methods=["GET", "POST"])
+def editar():
+    if not session.get("login"):
+        return redirect("/login")
+
+    if request.method == "GET":
+        numero = request.args.get("numero", "").strip()
+        if not numero:
+            return redirect("/buscar")
+
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT o.*, c.nombre, c.telefono, c.email, c.direccion, c.cedula, c.notas
+            FROM ordenes o
+            JOIN clientes c ON o.cliente_id=c.id
+            WHERE o.numero_orden=%s
+            """,
+            (numero,),
+        )
+        x = cur.fetchone()
+        con.close()
+
+        if not x:
+            return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+
+        def val(campo):
+            return str(x[campo] or "").replace('&', '&amp;').replace('"', '&quot;').replace('<', '&lt;').replace('>', '&gt;')
+
+        return html_layout(
+            "Editar orden",
+            card_html(f"""
+            <h2 style="margin-top:0;">Editar orden {val('numero_orden')}</h2>
+            <p style="color:#6b7280; margin-top:-6px;">Corregí los datos sin enviar ningún email al cliente.</p>
+
+            <form method="post">
+              <input type="hidden" name="numero" value="{val('numero_orden')}">
+
+              <h3>Cliente</h3>
+              <label>Nombre</label><br>
+              <input name="nombre" value="{val('nombre')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Teléfono</label><br>
+              <input name="telefono" value="{val('telefono')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Email</label><br>
+              <input name="email" type="email" value="{val('email')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Dirección</label><br>
+              <input name="direccion" value="{val('direccion')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Cédula</label><br>
+              <input name="cedula" value="{val('cedula')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Notas cliente</label><br>
+              <input name="notas" value="{val('notas')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <h3>Equipo</h3>
+              <label>Tipo de equipo</label><br>
+              <input name="tipo" value="{val('tipo_equipo')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Marca</label><br>
+              <input name="marca" value="{val('marca')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Modelo</label><br>
+              <input name="modelo" value="{val('modelo')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>N° de serie</label><br>
+              <input name="numero_serie" value="{val('numero_serie')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>IMEI</label><br>
+              <input name="imei" value="{val('imei')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Estado general</label><br>
+              <input name="estado_general" value="{val('estado_general')}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;"><br>
+
+              <label>Falla declarada por el cliente</label><br>
+              <textarea name="falla_cliente" rows="3" style="width:100%; max-width:520px; padding:10px; margin:6px 0 12px; border:1px solid #d1d5db; border-radius:10px;">{val('falla_cliente')}</textarea><br>
+
+              <label>Observaciones</label><br>
+              <textarea name="observaciones" rows="3" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;">{val('observaciones')}</textarea><br>
+
+              <button type="submit" style="background:#0f766e; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar correcciones</button>
+              <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:12px; color:#2563eb; font-weight:bold; text-decoration:none;">Actualizar reparación</a>
+            </form>
+
+            <div style="margin-top:16px; padding:12px 14px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:12px; color:#166534;">
+              Guardar aquí <strong>no envía email</strong> al cliente.
+            </div>
+            """)
+        )
+
+    numero = request.form.get("numero", "").strip()
+    con = db()
+    cur = con.cursor()
+    cur.execute("SELECT cliente_id FROM ordenes WHERE numero_orden=%s", (numero,))
+    orden = cur.fetchone()
+    if not orden:
+        con.close()
+        return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+
+    cliente_id = orden["cliente_id"]
+    cur.execute(
+        """
+        UPDATE clientes
+        SET nombre=%s, telefono=%s, email=%s, direccion=%s, cedula=%s, notas=%s
+        WHERE id=%s
+        """,
+        (
+            request.form.get("nombre", "").strip(),
+            request.form.get("telefono", "").strip(),
+            request.form.get("email", "").strip(),
+            request.form.get("direccion", "").strip(),
+            request.form.get("cedula", "").strip(),
+            request.form.get("notas", "").strip(),
+            cliente_id,
+        ),
+    )
+    cur.execute(
+        """
+        UPDATE ordenes
+        SET tipo_equipo=%s, marca=%s, modelo=%s, numero_serie=%s, imei=%s,
+            estado_general=%s, falla_cliente=%s, observaciones=%s
+        WHERE numero_orden=%s
+        """,
+        (
+            request.form.get("tipo", "").strip(),
+            request.form.get("marca", "").strip(),
+            request.form.get("modelo", "").strip(),
+            request.form.get("numero_serie", "").strip(),
+            request.form.get("imei", "").strip(),
+            request.form.get("estado_general", "").strip(),
+            request.form.get("falla_cliente", "").strip(),
+            request.form.get("observaciones", "").strip(),
+            numero,
+        ),
+    )
+    con.commit()
+    con.close()
+    return redirect(f"/buscar?q={numero}")
+
+
 @app.route("/actualizar", methods=["GET", "POST"])
 def actualizar():
     if not session.get("login"):
@@ -825,37 +970,78 @@ def actualizar():
 
     if request.method == "GET":
         numero = request.args.get("numero", "").strip()
+        if not numero:
+            return redirect("/buscar")
+
+        con = db()
+        cur = con.cursor()
+        cur.execute(
+            """
+            SELECT o.numero_orden, o.estado, o.diagnostico_tecnico, o.presupuesto,
+                   o.token_aprobacion, o.presupuesto_aprobado, o.presupuesto_rechazado,
+                   c.nombre, c.email
+            FROM ordenes o
+            JOIN clientes c ON o.cliente_id=c.id
+            WHERE o.numero_orden=%s
+            """,
+            (numero,),
+        )
+        actual = cur.fetchone()
+        con.close()
+
+        if not actual:
+            return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+
+        estados = [
+            "Recibido en taller", "En diagnóstico", "Esperando aprobación", "Aprobado",
+            "Rechazado", "Esperando repuesto", "En reparación", "Listo para retirar", "Entregado"
+        ]
+        opciones = "".join(
+            f'<option value="{e}" {"selected" if actual["estado"] == e else ""}>{e}</option>'
+            for e in estados
+        )
+        diag_val = str(actual["diagnostico_tecnico"] or "").replace('&','&amp;').replace('"','&quot;').replace('<','&lt;').replace('>','&gt;')
+        pres_val = str(actual["presupuesto"] or 0)
+
+        boton_presupuesto = ""
+        if actual["estado"] == "Esperando aprobación" and float(actual["presupuesto"] or 0) > 0 and actual["email"]:
+            boton_presupuesto = f"""
+            <form method="post" action="/enviar_presupuesto" style="margin-top:14px;">
+              <input type="hidden" name="numero" value="{actual['numero_orden']}">
+              <button type="submit" style="background:#f59e0b; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">📧 Enviar presupuesto al cliente</button>
+            </form>
+            """
 
         return html_layout(
             "Actualizar orden",
             card_html(f"""
-            <h2 style="margin-top:0;">Actualizar orden</h2>
+            <h2 style="margin-top:0;">Actualizar orden {actual['numero_orden']}</h2>
+            <p style="color:#6b7280; margin-top:-6px;">Los cambios se guardan sin email, salvo que marques la opción de envío.</p>
+
             <form method="post">
-              <label>Número</label><br>
-              <input name="numero" value="{numero}" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
+              <input type="hidden" name="numero" value="{actual['numero_orden']}">
 
               <label>Estado</label><br>
-              <select name="estado" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;">
-                <option value="">-- elegir --</option>
-                <option value="En diagnóstico">En diagnóstico</option>
-                <option value="Esperando aprobación">Esperando aprobación</option>
-                <option value="Aprobado">Aprobado</option>
-                <option value="Rechazado">Rechazado</option>
-                <option value="Esperando repuesto">Esperando repuesto</option>
-                <option value="En reparación">En reparación</option>
-                <option value="Listo para retirar">Listo para retirar</option>
-                <option value="Entregado">Entregado</option>
+              <select name="estado" style="width:100%; max-width:520px; padding:10px; margin:6px 0 16px; border:1px solid #d1d5db; border-radius:10px;">
+                {opciones}
               </select><br>
 
               <label>Diagnóstico</label><br>
-              <input name="diag" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:16px; border:1px solid #d1d5db; border-radius:10px;"><br>
+              <textarea name="diag" rows="4" style="width:100%; max-width:520px; padding:10px; margin:6px 0 16px; border:1px solid #d1d5db; border-radius:10px;">{diag_val}</textarea><br>
 
               <label>Presupuesto</label><br>
-              <input name="presupuesto" style="width:100%; max-width:420px; padding:10px; margin-top:6px; margin-bottom:18px; border:1px solid #d1d5db; border-radius:10px;"><br>
+              <input name="presupuesto" type="number" step="0.01" min="0" value="{pres_val}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
-              <button style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar</button>
+              <label style="display:flex; align-items:center; gap:10px; margin:4px 0 18px; max-width:520px; padding:12px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px;">
+                <input type="checkbox" name="enviar_email" value="1" style="width:18px; height:18px;">
+                <span><strong>Enviar esta actualización por email al cliente</strong><br><small style="color:#6b7280;">Si no lo marcás, el cliente no recibe ningún correo.</small></span>
+              </label>
+
+              <button type="submit" style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar actualización</button>
+              <a href="/editar?numero={actual['numero_orden']}" style="margin-left:12px; color:#0f766e; font-weight:bold; text-decoration:none;">Editar datos</a>
             </form>
 
+            {boton_presupuesto}
             <p style="margin-top:18px;"><a href="/" style="color:#2563eb; font-weight:bold;">Volver</a></p>
             """)
         )
@@ -864,10 +1050,10 @@ def actualizar():
     estado = request.form.get("estado", "").strip()
     diag = request.form.get("diag", "").strip()
     pres = request.form.get("presupuesto", "").strip()
+    enviar = request.form.get("enviar_email") == "1"
 
     con = db()
     cur = con.cursor()
-
     cur.execute(
         """
         SELECT o.*, c.nombre, c.email
@@ -883,16 +1069,13 @@ def actualizar():
         con.close()
         return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
 
-    if estado == "Esperando aprobación":
+    if estado == "Esperando aprobación" and actual["estado"] != "Esperando aprobación":
         nuevo_token = secrets.token_urlsafe(32)
         cur.execute(
             """
             UPDATE ordenes
-            SET token_aprobacion=%s,
-                presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
+            SET token_aprobacion=%s, presupuesto_aprobado=FALSE, fecha_aprobacion=NULL,
+                presupuesto_rechazado=FALSE, fecha_rechazo=NULL
             WHERE numero_orden=%s
             """,
             (nuevo_token, numero),
@@ -902,49 +1085,41 @@ def actualizar():
         cur.execute(
             """
             UPDATE ordenes
-            SET presupuesto_aprobado=TRUE,
-                fecha_aprobacion=%s,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
+            SET presupuesto_aprobado=TRUE, fecha_aprobacion=%s,
+                presupuesto_rechazado=FALSE, fecha_rechazo=NULL
             WHERE numero_orden=%s
             """,
             (datetime.datetime.now(), numero),
         )
-
-    if estado == "Rechazado":
+    elif estado == "Rechazado":
         cur.execute(
             """
             UPDATE ordenes
-            SET presupuesto_rechazado=TRUE,
-                fecha_rechazo=%s,
-                presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL
+            SET presupuesto_rechazado=TRUE, fecha_rechazo=%s,
+                presupuesto_aprobado=FALSE, fecha_aprobacion=NULL
             WHERE numero_orden=%s
             """,
             (datetime.datetime.now(), numero),
         )
-
-    if estado and estado not in ["Aprobado", "Rechazado", "Esperando aprobación"]:
+    elif estado not in ["Esperando aprobación", "Aprobado", "Rechazado"]:
         cur.execute(
             """
             UPDATE ordenes
-            SET presupuesto_aprobado=FALSE,
-                fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE,
-                fecha_rechazo=NULL
+            SET presupuesto_aprobado=FALSE, fecha_aprobacion=NULL,
+                presupuesto_rechazado=FALSE, fecha_rechazo=NULL
             WHERE numero_orden=%s
             """,
             (numero,),
         )
 
-    if estado:
-        cur.execute("UPDATE ordenes SET estado=%s WHERE numero_orden=%s", (estado, numero))
-
-    if diag:
-        cur.execute("UPDATE ordenes SET diagnostico_tecnico=%s WHERE numero_orden=%s", (diag, numero))
-
-    if pres:
-        cur.execute("UPDATE ordenes SET presupuesto=%s WHERE numero_orden=%s", (pres, numero))
+    cur.execute(
+        """
+        UPDATE ordenes
+        SET estado=%s, diagnostico_tecnico=%s, presupuesto=%s
+        WHERE numero_orden=%s
+        """,
+        (estado or actual["estado"], diag, pres or 0, numero),
+    )
 
     cur.execute(
         """
@@ -958,27 +1133,58 @@ def actualizar():
         (numero,),
     )
     info = cur.fetchone()
-
     con.commit()
     con.close()
 
-    if info and info["email"]:
+    if enviar and info and info["email"]:
         enviar_email(
-            destino=info["email"],
-            numero_orden=info["numero_orden"],
-            cliente=info["nombre"],
-            tipo=info["tipo_equipo"],
-            marca=info["marca"],
-            modelo=info["modelo"],
-            estado=info["estado"],
-            presupuesto=info["presupuesto"],
-            tipo_mensaje="actualizacion",
-            token_aprobacion=info["token_aprobacion"],
-            presupuesto_aprobado=info["presupuesto_aprobado"],
+            destino=info["email"], numero_orden=info["numero_orden"], cliente=info["nombre"],
+            tipo=info["tipo_equipo"], marca=info["marca"], modelo=info["modelo"],
+            estado=info["estado"], presupuesto=info["presupuesto"], tipo_mensaje="actualizacion",
+            token_aprobacion=info["token_aprobacion"], presupuesto_aprobado=info["presupuesto_aprobado"],
             presupuesto_rechazado=info["presupuesto_rechazado"]
         )
 
-    return redirect(f"/buscar?q={numero}")
+    return redirect(f"/actualizar?numero={numero}")
+
+
+@app.post("/enviar_presupuesto")
+def enviar_presupuesto_manual():
+    if not session.get("login"):
+        return redirect("/login")
+
+    numero = request.form.get("numero", "").strip()
+    con = db()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT o.numero_orden, c.nombre, c.email, o.tipo_equipo, o.marca, o.modelo,
+               o.estado, o.presupuesto, o.token_aprobacion,
+               o.presupuesto_aprobado, o.presupuesto_rechazado
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id=c.id
+        WHERE o.numero_orden=%s
+        """,
+        (numero,),
+    )
+    info = cur.fetchone()
+    con.close()
+
+    if not info:
+        return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+    if not info["email"]:
+        return html_layout("Sin email", card_html(f"<h2 style='margin-top:0;'>El cliente no tiene email</h2><p><a href='/editar?numero={numero}'>Agregar email</a></p>"))
+    if info["estado"] != "Esperando aprobación" or float(info["presupuesto"] or 0) <= 0:
+        return html_layout("No disponible", card_html(f"<h2 style='margin-top:0;'>No se puede enviar el presupuesto</h2><p>La orden debe estar en <strong>Esperando aprobación</strong> y tener un importe mayor a 0.</p><p><a href='/actualizar?numero={numero}'>Volver</a></p>"))
+
+    enviar_email(
+        destino=info["email"], numero_orden=info["numero_orden"], cliente=info["nombre"],
+        tipo=info["tipo_equipo"], marca=info["marca"], modelo=info["modelo"],
+        estado=info["estado"], presupuesto=info["presupuesto"], tipo_mensaje="actualizacion",
+        token_aprobacion=info["token_aprobacion"], presupuesto_aprobado=info["presupuesto_aprobado"],
+        presupuesto_rechazado=info["presupuesto_rechazado"]
+    )
+    return redirect(f"/actualizar?numero={numero}")
 
 
 @app.get("/aceptar_presupuesto/<token>")
