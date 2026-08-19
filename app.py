@@ -9,6 +9,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 import datetime
 import secrets
+from html import escape
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
@@ -150,6 +151,10 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS bloqueo_tipo TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS clave_bloqueo TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS patron_bloqueo TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS costo_repuestos NUMERIC DEFAULT 0;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS mano_obra NUMERIC DEFAULT 0;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS cobrado NUMERIC DEFAULT 0;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS forma_pago TEXT;")
 
     con.commit()
     con.close()
@@ -584,7 +589,45 @@ def crear():
                   <option value="Otro">Otro</option>
                 </select><br>
 
-                <label>Falla declarada por el cliente</label><br>
+                <div style="margin:20px 0; padding:18px; background:#f8fafc; border:1px solid #e5e7eb; border-radius:14px; max-width:760px;">
+                <h3 style="margin-top:0;">💰 Finanzas de la orden</h3>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px;">
+                  <div>
+                    <label>Precio / presupuesto</label><br>
+                    <input id="finPrecio" value="{val('presupuesto')}" readonly style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; background:#f3f4f6; border:1px solid #d1d5db; border-radius:10px;">
+                  </div>
+                  <div>
+                    <label>Costo de repuestos</label><br>
+                    <input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                  </div>
+                  <div>
+                    <label>Mano de obra</label><br>
+                    <input id="finMano" name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                  </div>
+                  <div>
+                    <label>Cobrado / seña</label><br>
+                    <input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                  </div>
+                  <div>
+                    <label>Forma de pago</label><br>
+                    <select name="forma_pago" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                      <option value="" {'selected' if not x['forma_pago'] else ''}>Sin definir</option>
+                      <option value="Efectivo" {'selected' if x['forma_pago']=='Efectivo' else ''}>Efectivo</option>
+                      <option value="Transferencia" {'selected' if x['forma_pago']=='Transferencia' else ''}>Transferencia</option>
+                      <option value="Débito" {'selected' if x['forma_pago']=='Débito' else ''}>Débito</option>
+                      <option value="Crédito" {'selected' if x['forma_pago']=='Crédito' else ''}>Crédito</option>
+                      <option value="Mixto" {'selected' if x['forma_pago']=='Mixto' else ''}>Mixto</option>
+                    </select>
+                  </div>
+                </div>
+                <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin-top:14px;">
+                  <div style="padding:12px; background:white; border:1px solid #e5e7eb; border-radius:10px;"><small>Saldo pendiente</small><br><strong id="finSaldo">$0</strong></div>
+                  <div style="padding:12px; background:white; border:1px solid #e5e7eb; border-radius:10px;"><small>Margen estimado</small><br><strong id="finMargen">$0</strong></div>
+                </div>
+                <p style="font-size:12px; color:#6b7280; margin-bottom:0;">El margen se calcula como precio cobrado al cliente menos costo de repuestos. La mano de obra queda registrada aparte.</p>
+              </div>
+
+              <label>Falla declarada por el cliente</label><br>
                 <textarea name="falla_cliente" id="fallaCliente" rows="3" style="width:100%; max-width:760px; padding:10px; margin:6px 0 12px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;"></textarea><br>
 
                 <label>Fecha estimada de entrega</label><br>
@@ -844,7 +887,8 @@ def buscar():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
             <a href="/editar?numero={r['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
-            <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
+            <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
+            <a href="/etiqueta?numero={r['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold;">Etiqueta</a>
           </td>
         </tr>
         """
@@ -905,7 +949,8 @@ def ver_ordenes():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{badge}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
             <a href="/editar?numero={o['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
-            <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold;">Actualizar</a>
+            <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
+            <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold;">Etiqueta</a>
           </td>
         </tr>
         """
@@ -1025,7 +1070,22 @@ def editar():
               Guardar aquí <strong>no envía email</strong> al cliente.
             </div>
 
+            <script>
+              function calcularFinanzas(){{
+                const precio = parseFloat(document.getElementById('finPrecio')?.value || 0);
+                const costo = parseFloat(document.getElementById('finCosto')?.value || 0);
+                const cobrado = parseFloat(document.getElementById('finCobrado')?.value || 0);
+                const saldo = Math.max(precio - cobrado, 0);
+                const margen = precio - costo;
+                if(document.getElementById('finSaldo')) document.getElementById('finSaldo').innerText = '$' + saldo.toLocaleString('es-UY');
+                if(document.getElementById('finMargen')) document.getElementById('finMargen').innerText = '$' + margen.toLocaleString('es-UY');
+              }}
+              calcularFinanzas();
+            </script>
+
             <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
+              <a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="display:inline-block; background:#7c3aed; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🖨️ Imprimir etiquetas</a>
+              <a href="/etiqueta?numero={actual['numero_orden']}" target="_blank" style="display:inline-block; background:#7c3aed; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🖨️ Imprimir etiquetas</a>
               <a href="/ver_ordenes" style="display:inline-block; background:#111827; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">📋 Ver órdenes</a>
               <a href="/" style="display:inline-block; background:#e5e7eb; color:#111827; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🏠 Inicio</a>
             </div>
@@ -1064,6 +1124,7 @@ def editar():
         SET tipo_equipo=%s, marca=%s, modelo=%s, numero_serie=%s, imei=%s,
             estado_general=%s, accesorios=%s, servicio_rapido=%s, fecha_entrega=%s,
             bloqueo_tipo=%s, clave_bloqueo=%s, patron_bloqueo=%s,
+            costo_repuestos=%s, mano_obra=%s, cobrado=%s, forma_pago=%s,
             falla_cliente=%s, observaciones=%s
         WHERE numero_orden=%s
         """,
@@ -1080,6 +1141,10 @@ def editar():
             request.form.get("bloqueo_tipo", "").strip(),
             request.form.get("clave_bloqueo", "").strip(),
             request.form.get("patron_bloqueo", "").strip(),
+            request.form.get("costo_repuestos", "0").strip() or 0,
+            request.form.get("mano_obra", "0").strip() or 0,
+            request.form.get("cobrado", "0").strip() or 0,
+            request.form.get("forma_pago", "").strip(),
             request.form.get("falla_cliente", "").strip(),
             request.form.get("observaciones", "").strip(),
             numero,
@@ -1088,6 +1153,93 @@ def editar():
     con.commit()
     con.close()
     return redirect("/ver_ordenes")
+
+
+@app.get("/etiqueta")
+def etiqueta():
+    if not session.get("login"):
+        return redirect("/login")
+
+    numero = request.args.get("numero", "").strip()
+    if not numero:
+        return redirect("/ver_ordenes")
+
+    con = db()
+    cur = con.cursor()
+    cur.execute(
+        """
+        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.imei, o.numero_serie,
+               o.accesorios, o.fecha_ingreso, c.nombre
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id=c.id
+        WHERE o.numero_orden=%s
+        """,
+        (numero,),
+    )
+    x = cur.fetchone()
+    con.close()
+
+    if not x:
+        return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+
+    n = escape(str(x["numero_orden"] or ""))
+    cliente = escape(str(x["nombre"] or ""))
+    equipo = escape(" ".join(str(v or "").strip() for v in [x["tipo_equipo"], x["marca"], x["modelo"]] if str(v or "").strip()))
+    imei = escape(str(x["imei"] or ""))
+    serie = escape(str(x["numero_serie"] or ""))
+    accesorios = escape(str(x["accesorios"] or "Sin accesorios declarados"))
+    fecha = escape(str(x["fecha_ingreso"] or ""))
+
+    # Importante: por privacidad, la etiqueta nunca imprime PIN, clave ni patrón.
+    return f"""
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Etiquetas {n}</title>
+      <style>
+        body {{ font-family: Arial, sans-serif; margin: 18px; color:#111; }}
+        .acciones {{ margin-bottom:16px; }}
+        .acciones button, .acciones a {{ padding:10px 14px; margin-right:8px; border-radius:9px; border:0; text-decoration:none; font-weight:bold; cursor:pointer; }}
+        .print {{ background:#111827; color:#fff; }}
+        .back {{ background:#e5e7eb; color:#111; }}
+        .label {{ width:72mm; min-height:38mm; border:1px dashed #333; padding:4mm; margin-bottom:6mm; box-sizing:border-box; page-break-inside:avoid; }}
+        .nr {{ font-size:17px; font-weight:800; margin-bottom:4px; }}
+        .tipo {{ font-size:12px; font-weight:bold; text-transform:uppercase; color:#444; }}
+        .line {{ font-size:12px; margin-top:4px; }}
+        .small {{ font-size:10px; color:#555; margin-top:5px; }}
+        @media print {{
+          body {{ margin:0; }}
+          .acciones {{ display:none; }}
+          .label {{ border:1px solid #000; margin:0 0 3mm 0; }}
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="acciones">
+        <button class="print" onclick="window.print()">🖨️ Imprimir</button>
+        <a class="back" href="/editar?numero={n}">Volver a la orden</a>
+      </div>
+
+      <div class="label">
+        <div class="tipo">NR Tech · Equipo</div>
+        <div class="nr">{n}</div>
+        <div class="line"><strong>Cliente:</strong> {cliente}</div>
+        <div class="line"><strong>Equipo:</strong> {equipo}</div>
+        <div class="line"><strong>IMEI:</strong> {imei or '-'} &nbsp; <strong>Serie:</strong> {serie or '-'}</div>
+        <div class="small">Ingreso: {fecha} · No contiene claves de acceso</div>
+      </div>
+
+      <div class="label">
+        <div class="tipo">NR Tech · Accesorios</div>
+        <div class="nr">{n}</div>
+        <div class="line"><strong>Cliente:</strong> {cliente}</div>
+        <div class="line"><strong>Accesorios:</strong> {accesorios}</div>
+        <div class="small">Mantener junto al equipo identificado con la misma orden.</div>
+      </div>
+    </body>
+    </html>
+    """
 
 
 @app.route("/actualizar", methods=["GET", "POST"])
