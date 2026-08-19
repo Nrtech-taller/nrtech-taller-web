@@ -10,6 +10,10 @@ from email.utils import formataddr
 import datetime
 import secrets
 from html import escape
+from urllib.parse import quote
+from io import BytesIO
+from flask import send_file
+import qrcode
 
 app = Flask(__name__)
 app.secret_key = "nrtech_secret_key"
@@ -155,6 +159,11 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS mano_obra NUMERIC DEFAULT 0;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS cobrado NUMERIC DEFAULT 0;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS forma_pago TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS token_publico TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS garantia_dias INTEGER DEFAULT 30;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_entregado DATE;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_numero TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
 
     con.commit()
     con.close()
@@ -788,7 +797,8 @@ def ver_ordenes():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
             <a href="/editar?numero={o['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
-            <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold;">Etiqueta</a>
+            <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold; margin-right:10px;">Etiqueta</a>
+            <a href="/entrega?numero={o['numero_orden']}" style="color:#b45309; font-weight:bold;">Entrega</a>
           </td>
         </tr>
         """
@@ -1477,6 +1487,197 @@ def ver_cliente(id):
     html += "<p style='margin-top:18px;'><a href='/clientes' style='color:#2563eb; font-weight:bold;'>Volver a clientes</a></p>"
 
     return html_layout("Ficha cliente", card_html(html))
+
+
+def _asegurar_token_y_comprobante(cur, orden):
+    token = orden.get("token_publico") if hasattr(orden, "get") else orden["token_publico"]
+    comprobante = orden.get("comprobante_numero") if hasattr(orden, "get") else orden["comprobante_numero"]
+    if not token:
+        token = secrets.token_urlsafe(24)
+        cur.execute("UPDATE ordenes SET token_publico=%s WHERE numero_orden=%s", (token, orden["numero_orden"]))
+    if not comprobante:
+        cur.execute("SELECT COUNT(*) AS total FROM ordenes WHERE comprobante_numero IS NOT NULL")
+        n = int(cur.fetchone()["total"] or 0) + 1
+        comprobante = f"NR-COMP-{datetime.datetime.now().year}-{n:05d}"
+        cur.execute("UPDATE ordenes SET comprobante_numero=%s, fecha_comprobante=NOW() WHERE numero_orden=%s", (comprobante, orden["numero_orden"]))
+    return token, comprobante
+
+
+def _buscar_entrega_por_numero(numero):
+    con = db(); cur = con.cursor()
+    cur.execute("""
+        SELECT o.*, c.nombre, c.telefono, c.email
+        FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
+        WHERE o.numero_orden=%s
+    """, (numero,))
+    x = cur.fetchone(); con.close(); return x
+
+
+@app.route("/entrega", methods=["GET", "POST"])
+def entrega():
+    if not session.get("login"):
+        return redirect("/login")
+
+    if request.method == "POST":
+        numero = request.form.get("numero", "").strip()
+        garantia_dias = int(request.form.get("garantia_dias", "30") or 30)
+        accion = request.form.get("accion", "guardar")
+        con = db(); cur = con.cursor()
+        cur.execute("""
+            SELECT o.*, c.nombre, c.telefono, c.email
+            FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
+            WHERE o.numero_orden=%s
+        """, (numero,))
+        orden = cur.fetchone()
+        if not orden:
+            con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+        token, comprobante = _asegurar_token_y_comprobante(cur, orden)
+        cur.execute("""
+            UPDATE ordenes
+            SET garantia_dias=%s, fecha_entregado=COALESCE(fecha_entregado, CURRENT_DATE), estado='Entregado'
+            WHERE numero_orden=%s
+        """, (garantia_dias, numero))
+        con.commit(); con.close()
+        url_publica = f"{BASE_URL or request.url_root.rstrip('/')}/documento/{token}"
+
+        if accion == "email":
+            orden2 = _buscar_entrega_por_numero(numero)
+            if not orden2 or not orden2["email"]:
+                return html_layout("Sin email", card_html(f"<h2>El cliente no tiene email</h2><p><a href='/entrega?numero={numero}'>Volver</a></p>"))
+            msg = EmailMessage()
+            msg["Subject"] = f"Comprobante y garantía {numero} – NR Tech"
+            msg["From"] = formataddr(("NR Tech – Tecnología en buenas manos", REMITENTE_EMAIL))
+            msg["To"] = orden2["email"]
+            msg.set_content(f"Hola {orden2['nombre']}.\n\nTu reparación {numero} fue entregada.\nComprobante: {comprobante}\nGarantía: {garantia_dias} días.\nVer comprobante y garantía: {url_publica}\n\nNR Tech")
+            msg.add_alternative(f"""
+              <div style='font-family:Arial,sans-serif;max-width:640px;margin:auto'>
+                <h2>NR Tech</h2><p>Hola <strong>{escape(orden2['nombre'] or '')}</strong>.</p>
+                <p>Tu reparación <strong>{numero}</strong> fue marcada como entregada.</p>
+                <p><strong>Comprobante:</strong> {comprobante}<br><strong>Garantía:</strong> {garantia_dias} días</p>
+                <p><a href='{url_publica}' style='display:inline-block;background:#2563eb;color:white;padding:12px 18px;border-radius:10px;text-decoration:none;font-weight:bold'>Ver comprobante y garantía</a></p>
+              </div>
+            """, subtype="html")
+            try:
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as smtp:
+                    smtp.login(REMITENTE_EMAIL, CONTRASENA_APP); smtp.send_message(msg)
+            except Exception as e:
+                print("Error envío entrega:", e)
+            return redirect(f"/entrega?numero={numero}&enviado=1")
+
+        if accion == "imprimir":
+            return redirect(f"/imprimir_entrega?numero={numero}")
+        if accion == "whatsapp":
+            orden2 = _buscar_entrega_por_numero(numero)
+            tel = ''.join(ch for ch in str(orden2['telefono'] or '') if ch.isdigit())
+            if tel and not tel.startswith('598'):
+                tel = '598' + tel.lstrip('0')
+            texto = f"Hola {orden2['nombre']}, tu equipo ya fue entregado por NR Tech. Orden {numero}. Comprobante {comprobante}. Garantía: {garantia_dias} días. Podés ver tu comprobante y garantía acá: {url_publica}"
+            destino = f"https://wa.me/{tel}?text={quote(texto)}" if tel else f"https://wa.me/?text={quote(texto)}"
+            return redirect(destino)
+        return redirect(f"/entrega?numero={numero}")
+
+    numero = request.args.get("numero", "").strip()
+    if not numero:
+        return redirect("/ver_ordenes")
+    x = _buscar_entrega_por_numero(numero)
+    if not x:
+        return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+    garantia = int(x["garantia_dias"] or 30)
+    enviado = request.args.get("enviado") == "1"
+    pres = float(x["presupuesto"] or 0)
+    contenido = f"""
+      <h2 style='margin-top:0'>📦 Entrega de {escape(numero)}</h2>
+      <p style='color:#64748b'>Cerrá la reparación y elegí cómo darle el respaldo al cliente.</p>
+      {"<div style='background:#f0fdf4;border:1px solid #bbf7d0;padding:12px;border-radius:10px;margin-bottom:14px'>✅ Email enviado.</div>" if enviado else ""}
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px'>
+        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Cliente</small><div style='font-weight:800'>{escape(x['nombre'] or '-')}</div></div>
+        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Equipo</small><div style='font-weight:800'>{escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div></div>
+        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Total</small><div style='font-weight:800'>${pres:,.0f}</div></div>
+      </div>
+      <form method='post'>
+        <input type='hidden' name='numero' value='{escape(numero)}'>
+        <label><strong>Garantía</strong></label><br>
+        <select name='garantia_dias' style='padding:10px;width:100%;max-width:280px;margin:6px 0 18px;border:1px solid #cbd5e1;border-radius:10px'>
+          <option value='30' {'selected' if garantia==30 else ''}>30 días</option>
+          <option value='90' {'selected' if garantia==90 else ''}>90 días</option>
+          <option value='180' {'selected' if garantia==180 else ''}>180 días</option>
+          <option value='365' {'selected' if garantia==365 else ''}>1 año</option>
+        </select>
+        <div style='display:flex;flex-wrap:wrap;gap:10px'>
+          <button name='accion' value='whatsapp' style='background:#16a34a;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer'>💬 WhatsApp</button>
+          <button name='accion' value='email' {'disabled' if not x['email'] else ''} style='background:#2563eb;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer'>📧 Email</button>
+          <button name='accion' value='imprimir' style='background:#111827;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer'>🖨️ Imprimir</button>
+          <button name='accion' value='guardar' style='background:#e5e7eb;color:#111827;border:0;padding:12px 16px;border-radius:10px;font-weight:800;cursor:pointer'>Guardar entrega</button>
+        </div>
+      </form>
+      <p style='margin-top:18px'><a href='/ver_ordenes'>← Volver a órdenes</a></p>
+    """
+    return html_layout("Entrega", card_html(contenido))
+
+
+@app.get("/documento/<token>")
+def documento_publico(token):
+    con = db(); cur = con.cursor()
+    cur.execute("""
+      SELECT o.numero_orden,o.tipo_equipo,o.marca,o.modelo,o.diagnostico_tecnico,o.presupuesto,
+             o.garantia_dias,o.fecha_entregado,o.comprobante_numero,o.forma_pago,c.nombre
+      FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
+      WHERE o.token_publico=%s
+    """, (token,))
+    x = cur.fetchone(); con.close()
+    if not x:
+        return html_layout("No encontrado", card_html("<h2>Comprobante no encontrado</h2>"))
+    fecha = x['fecha_entregado'] or datetime.date.today()
+    vence = fecha + datetime.timedelta(days=int(x['garantia_dias'] or 30))
+    vigente = datetime.date.today() <= vence
+    estado_g = "Vigente" if vigente else "Vencida"
+    contenido = f"""
+      <div style='text-align:center'><h2 style='margin-bottom:4px'>NR Tech</h2><div style='color:#64748b'>Tecnología en buenas manos</div></div>
+      <hr style='border:0;border-top:1px solid #e5e7eb;margin:18px 0'>
+      <p><strong>Comprobante:</strong> {escape(x['comprobante_numero'] or 'Pendiente')}</p>
+      <p><strong>Orden:</strong> {escape(x['numero_orden'])}</p>
+      <p><strong>Cliente:</strong> {escape(x['nombre'] or '-')}</p>
+      <p><strong>Equipo:</strong> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</p>
+      <p><strong>Trabajo:</strong> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</p>
+      <p><strong>Importe:</strong> ${float(x['presupuesto'] or 0):,.0f}</p>
+      <div style='background:{'#f0fdf4' if vigente else '#fef2f2'};padding:14px;border-radius:12px;margin-top:16px'>
+        <strong>Garantía: {estado_g}</strong><br>Desde {fecha.strftime('%d/%m/%Y')} hasta {vence.strftime('%d/%m/%Y')} ({int(x['garantia_dias'] or 30)} días)
+      </div>
+      <p style='font-size:12px;color:#64748b;margin-top:18px'>Este documento es un respaldo de la orden y garantía de NR Tech. La parte fiscal se habilitará cuando se configure el RUT y el sistema de facturación correspondiente.</p>
+    """
+    return html_layout("Comprobante y garantía", card_html(contenido))
+
+
+@app.get("/qr/<token>.png")
+def qr_documento(token):
+    url = f"{BASE_URL or request.url_root.rstrip('/')}/documento/{token}"
+    img = qrcode.make(url)
+    bio = BytesIO(); img.save(bio, format="PNG"); bio.seek(0)
+    return send_file(bio, mimetype="image/png")
+
+
+@app.get("/imprimir_entrega")
+def imprimir_entrega():
+    if not session.get("login"):
+        return redirect("/login")
+    numero = request.args.get("numero", "").strip()
+    con = db(); cur = con.cursor()
+    cur.execute("""SELECT o.*, c.nombre FROM ordenes o JOIN clientes c ON o.cliente_id=c.id WHERE o.numero_orden=%s""", (numero,))
+    x = cur.fetchone()
+    if not x:
+        con.close(); return "Orden no encontrada", 404
+    token, comprobante = _asegurar_token_y_comprobante(cur, x); con.commit(); con.close()
+    fecha = x['fecha_entregado'] or datetime.date.today(); garantia=int(x['garantia_dias'] or 30); vence=fecha+datetime.timedelta(days=garantia)
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>{comprobante}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px}}.row{{margin:8px 0}}img{{width:150px;height:150px}}@media print{{button{{display:none}}}}</style></head><body>
+      <div class='box'><h1 style='margin:0'>NR Tech</h1><div>Tecnología en buenas manos</div><hr>
+      <div class='row'><b>Comprobante:</b> {comprobante}</div><div class='row'><b>Orden:</b> {escape(numero)}</div>
+      <div class='row'><b>Cliente:</b> {escape(x['nombre'] or '-')}</div><div class='row'><b>Equipo:</b> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div>
+      <div class='row'><b>Trabajo:</b> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</div><div class='row'><b>Importe:</b> ${float(x['presupuesto'] or 0):,.0f}</div>
+      <div class='row'><b>Garantía:</b> {garantia} días — hasta {vence.strftime('%d/%m/%Y')}</div>
+      <img src='/qr/{token}.png' alt='QR'><div style='font-size:12px;color:#666'>Escaneá el QR para consultar comprobante y garantía.</div>
+      <p style='font-size:11px;color:#666'>Comprobante interno / respaldo de servicio. Datos fiscales pendientes de configuración.</p></div>
+      <button onclick='window.print()' style='margin-top:16px;padding:12px 18px'>Imprimir</button><script>setTimeout(()=>window.print(),500)</script></body></html>"""
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
