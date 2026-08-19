@@ -1062,6 +1062,38 @@ def editar():
               <label>Observaciones</label><br>
               <textarea name="observaciones" rows="3" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;">{val('observaciones')}</textarea><br>
 
+              <h3 style="margin-top:22px;">Finanzas de la orden</h3>
+              <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:12px; max-width:760px; margin-bottom:14px;">
+                <div>
+                  <label>Costo de repuestos</label><br>
+                  <input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                </div>
+                <div>
+                  <label>Mano de obra</label><br>
+                  <input id="finMano" name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                </div>
+                <div>
+                  <label>Cobrado / seña</label><br>
+                  <input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                </div>
+                <div>
+                  <label>Forma de pago</label><br>
+                  <select name="forma_pago" style="width:100%; padding:10px; margin-top:6px; box-sizing:border-box; border:1px solid #d1d5db; border-radius:10px;">
+                    <option value="" {'selected' if not x['forma_pago'] else ''}>Sin definir</option>
+                    <option value="Efectivo" {'selected' if x['forma_pago']=='Efectivo' else ''}>Efectivo</option>
+                    <option value="Transferencia" {'selected' if x['forma_pago']=='Transferencia' else ''}>Transferencia</option>
+                    <option value="Débito" {'selected' if x['forma_pago']=='Débito' else ''}>Débito</option>
+                    <option value="Crédito" {'selected' if x['forma_pago']=='Crédito' else ''}>Crédito</option>
+                    <option value="Mixto" {'selected' if x['forma_pago']=='Mixto' else ''}>Mixto</option>
+                  </select>
+                </div>
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:12px; max-width:760px; margin-bottom:18px;">
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;"><strong>Saldo:</strong> <span id="finSaldo">$0</span></div>
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:12px; padding:12px 16px;"><strong>Margen estimado:</strong> <span id="finMargen">$0</span></div>
+              </div>
+              <input id="finPrecio" type="hidden" value="{val('presupuesto')}">
+
               <button type="submit" style="background:#0f766e; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar correcciones</button>
               <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:12px; color:#2563eb; font-weight:bold; text-decoration:none;">Actualizar reparación</a>
             </form>
@@ -1085,7 +1117,6 @@ def editar():
 
             <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:16px;">
               <a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="display:inline-block; background:#7c3aed; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🖨️ Imprimir etiquetas</a>
-              <a href="/etiqueta?numero={actual['numero_orden']}" target="_blank" style="display:inline-block; background:#7c3aed; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🖨️ Imprimir etiquetas</a>
               <a href="/ver_ordenes" style="display:inline-block; background:#111827; color:white; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">📋 Ver órdenes</a>
               <a href="/" style="display:inline-block; background:#e5e7eb; color:#111827; padding:10px 16px; border-radius:10px; font-weight:bold; text-decoration:none;">🏠 Inicio</a>
             </div>
