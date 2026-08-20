@@ -839,7 +839,7 @@ def ver_ordenes():
                o.estado,o.presupuesto
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
-        ORDER BY o.id DESC
+        ORDER BY CASE WHEN o.estado = 'Entregado' THEN 1 ELSE 0 END ASC, o.id DESC
         """
     )
 
