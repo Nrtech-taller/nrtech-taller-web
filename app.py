@@ -118,6 +118,7 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS cedula TEXT;")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS notas TEXT;")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_alta TIMESTAMP DEFAULT NOW();")
+    cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS acepta_promociones BOOLEAN DEFAULT FALSE;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS ordenes (
@@ -525,6 +526,7 @@ def home():
       <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
       <a href="/solicitudes_ingreso" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📲 Autoregistro cliente</h3><p style="margin:0;color:#6b7280;">Generar link/QR y revisar solicitudes.</p></div></a>
       <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
+      <a href="/difusion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📢 Difusión WhatsApp</h3><p style="margin:0;color:#6b7280;">Clientes que aceptaron recibir promociones.</p></div></a>
       <a href="/configuracion_empresa" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">⚙️ Datos de NR Tech</h3><p style="margin:0;color:#6b7280;">Datos comerciales y fiscales del taller.</p></div></a>
       <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
     </div>
@@ -1600,6 +1602,12 @@ def ver_cliente(id):
     <p><strong>Cédula:</strong> {cliente['cedula'] or '-'}</p>
     <p><strong>Notas:</strong> {cliente['notas'] or '-'}</p>
 
+    <h3 style="margin-top:24px;">📢 Comunicaciones</h3>
+    <form method="post" action="/cliente/{id}/promociones" style="background:#f8fafc;padding:12px;border-radius:10px;margin-bottom:18px;">
+      <label><input type="checkbox" name="acepta_promociones" value="1" {"checked" if cliente.get("acepta_promociones") else ""}> Cliente acepta recibir novedades/promociones por WhatsApp</label>
+      <button style="margin-left:10px;padding:7px 12px;border:0;border-radius:8px;background:#2563eb;color:white;font-weight:bold">Guardar</button>
+    </form>
+
     <h3 style="margin-top:26px;">Historial de órdenes</h3>
     """
 
@@ -1632,6 +1640,79 @@ def ver_cliente(id):
     html += "<p style='margin-top:18px;'><a href='/clientes' style='color:#2563eb; font-weight:bold;'>Volver a clientes</a></p>"
 
     return html_layout("Ficha cliente", card_html(html))
+
+
+
+@app.route("/difusion", methods=["GET", "POST"])
+def difusion():
+    if not session.get("login"):
+        return redirect("/login")
+
+    q = request.args.get("q", "").strip()
+    con = db(); cur = con.cursor()
+    sql = """
+      SELECT id,nombre,telefono,email,fecha_alta
+      FROM clientes
+      WHERE COALESCE(acepta_promociones,FALSE)=TRUE
+        AND COALESCE(telefono,'') <> ''
+    """
+    params=[]
+    if q:
+        sql += " AND (COALESCE(nombre,'') ILIKE %s OR COALESCE(telefono,'') ILIKE %s)"
+        like=f"%{q}%"; params=[like,like]
+    sql += " ORDER BY nombre ASC"
+    cur.execute(sql, tuple(params))
+    filas=cur.fetchall(); con.close()
+
+    mensaje = request.form.get("mensaje","").strip() if request.method=="POST" else ""
+    cards=""
+    for c in filas:
+        tel="".join(ch for ch in str(c.get("telefono") or "") if ch.isdigit())
+        if tel.startswith("0"): tel="598"+tel[1:]
+        elif not tel.startswith("598"): tel="598"+tel
+        link=""
+        if mensaje:
+            link="https://wa.me/"+tel+"?text="+quote(mensaje)
+        cards += f"""
+        <tr>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(c.get('nombre') or '-'))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(c.get('telefono') or '-'))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>
+            {f'<a target="_blank" href="{link}" style="color:#16a34a;font-weight:bold">Abrir WhatsApp</a>' if mensaje else 'Escribí el mensaje arriba'}
+          </td>
+        </tr>"""
+
+    contenido=f"""
+      <h2 style='margin-top:0'>📢 Difusión WhatsApp</h2>
+      <p style='color:#64748b'>Solo aparecen clientes que aceptaron recibir promociones.</p>
+      <div style='background:#f0fdf4;padding:12px;border-radius:10px;margin-bottom:16px'>
+        <strong>{len(filas)} contactos habilitados</strong>
+      </div>
+      <form method='post'>
+        <label><strong>Mensaje de campaña</strong></label>
+        <textarea name='mensaje' rows='5' placeholder='Ej: Hola 👋 En NR Tech tenemos...' style='width:100%;padding:11px;margin-top:6px;border:1px solid #d1d5db;border-radius:10px'>{escape(mensaje)}</textarea>
+        <button style='margin-top:10px;background:#16a34a;color:white;border:0;padding:11px 16px;border-radius:10px;font-weight:bold'>Preparar WhatsApp</button>
+      </form>
+      <div style='overflow-x:auto;margin-top:18px'>
+      <table style='width:100%;border-collapse:collapse'>
+        <tr style='background:#eff6ff;text-align:left'><th style='padding:10px'>Cliente</th><th style='padding:10px'>WhatsApp</th><th style='padding:10px'></th></tr>
+        {cards or "<tr><td colspan='3' style='padding:18px;text-align:center;color:#64748b'>Todavía no hay clientes habilitados para difusión.</td></tr>"}
+      </table></div>
+      <p style='font-size:12px;color:#64748b;margin-top:16px'>Esta versión prepara el mensaje individualmente y abre WhatsApp para que vos confirmes el envío. No realiza envíos masivos automáticos.</p>
+      <p><a href='/'>🏠 Inicio</a></p>
+    """
+    return html_layout("Difusión WhatsApp", card_html(contenido))
+
+
+@app.post("/cliente/<int:id>/promociones")
+def cambiar_promociones(id):
+    if not session.get("login"):
+        return redirect("/login")
+    valor = request.form.get("acepta_promociones") == "1"
+    con=db(); cur=con.cursor()
+    cur.execute("UPDATE clientes SET acepta_promociones=%s WHERE id=%s",(valor,id))
+    con.commit(); con.close()
+    return redirect(f"/cliente/{id}")
 
 
 def _config_empresa():
@@ -2265,11 +2346,11 @@ def revisar_solicitud(sid):
             cur.execute("SELECT id FROM clientes WHERE email=%s LIMIT 1", (email,))
             r=cur.fetchone(); cliente_id = r["id"] if r else None
         if cliente_id:
-            cur.execute("""UPDATE clientes SET nombre=%s,telefono=%s,email=%s,cedula=%s WHERE id=%s""",
-                        (s.get("nombre"), telefono, email, s.get("cedula"), cliente_id))
+            cur.execute("""UPDATE clientes SET nombre=%s,telefono=%s,email=%s,cedula=%s,acepta_promociones=%s WHERE id=%s""",
+                        (s.get("nombre"), telefono, email, s.get("cedula"), bool(s.get("acepta_promociones")), cliente_id))
         else:
-            cur.execute("""INSERT INTO clientes(nombre,telefono,email,cedula) VALUES(%s,%s,%s,%s) RETURNING id""",
-                        (s.get("nombre"), telefono, email, s.get("cedula")))
+            cur.execute("""INSERT INTO clientes(nombre,telefono,email,cedula,acepta_promociones) VALUES(%s,%s,%s,%s,%s) RETURNING id""",
+                        (s.get("nombre"), telefono, email, s.get("cedula"), bool(s.get("acepta_promociones"))))
             cliente_id=cur.fetchone()["id"]
 
         token_aprobacion = secrets.token_urlsafe(32)
