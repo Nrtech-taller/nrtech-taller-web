@@ -165,6 +165,39 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_numero TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
 
+    # Configuración comercial/fiscal de NR Tech.
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS configuracion_empresa (
+        id INTEGER PRIMARY KEY,
+        nombre_comercial TEXT DEFAULT 'NR Tech',
+        titular TEXT,
+        rut TEXT,
+        domicilio_fiscal TEXT,
+        telefono TEXT,
+        email TEXT,
+        regimen TEXT DEFAULT 'MONOTRIBUTO'
+    );
+    """)
+    cur.execute("""
+        INSERT INTO configuracion_empresa (id, nombre_comercial, titular, rut, domicilio_fiscal, telefono, email, regimen)
+        VALUES (1, 'NR Tech', 'RODRIGUEZ PEÑA NICOLAS GUSTAVO', '221029060015',
+                'FLORES, AV. GRAL. 3249 301, MONTEVIDEO, CP 18000', '096580056',
+                'info.nrsolucionestecno@gmail.com', 'MONOTRIBUTO')
+        ON CONFLICT (id) DO NOTHING
+    """)
+    # Completa automáticamente los datos oficiales si la fila ya existía pero estaba vacía.
+    cur.execute("""
+        UPDATE configuracion_empresa SET
+            nombre_comercial = COALESCE(NULLIF(nombre_comercial, ''), 'NR Tech'),
+            titular = COALESCE(NULLIF(titular, ''), 'RODRIGUEZ PEÑA NICOLAS GUSTAVO'),
+            rut = COALESCE(NULLIF(rut, ''), '221029060015'),
+            domicilio_fiscal = COALESCE(NULLIF(domicilio_fiscal, ''), 'FLORES, AV. GRAL. 3249 301, MONTEVIDEO, CP 18000'),
+            telefono = COALESCE(NULLIF(telefono, ''), '096580056'),
+            email = COALESCE(NULLIF(email, ''), 'info.nrsolucionestecno@gmail.com'),
+            regimen = 'MONOTRIBUTO'
+        WHERE id = 1
+    """)
+
     con.commit()
     con.close()
 
@@ -461,6 +494,7 @@ def home():
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
       <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
       <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
+      <a href="/configuracion_empresa" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">⚙️ Datos de NR Tech</h3><p style="margin:0;color:#6b7280;">Datos comerciales y fiscales del taller.</p></div></a>
       <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
     </div>
     """
@@ -1568,6 +1602,44 @@ def ver_cliente(id):
     return html_layout("Ficha cliente", card_html(html))
 
 
+def _config_empresa():
+    con = db(); cur = con.cursor()
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
+    cfg = cur.fetchone(); con.close()
+    return cfg or {}
+
+
+@app.route("/configuracion_empresa", methods=["GET", "POST"])
+def configuracion_empresa():
+    if not session.get("login"):
+        return redirect("/login")
+    if request.method == "POST":
+        campos = ["nombre_comercial", "titular", "rut", "domicilio_fiscal", "telefono", "email"]
+        vals = [request.form.get(c, "").strip() for c in campos]
+        con = db(); cur = con.cursor()
+        cur.execute("""UPDATE configuracion_empresa SET nombre_comercial=%s,titular=%s,rut=%s,domicilio_fiscal=%s,telefono=%s,email=%s,regimen='MONOTRIBUTO' WHERE id=1""", vals)
+        con.commit(); con.close()
+        return redirect("/configuracion_empresa?guardado=1")
+    cfg = _config_empresa(); guardado = request.args.get("guardado") == "1"
+    def v(k): return escape(str(cfg.get(k) or ""))
+    contenido = f"""
+      <h2 style='margin-top:0'>⚙️ Datos de NR Tech</h2>
+      <p style='color:#64748b'>Datos comerciales y fiscales utilizados en los comprobantes y respaldos de NR Tech.</p>
+      {"<div style='background:#f0fdf4;padding:12px;border-radius:10px;margin-bottom:12px'>✅ Datos guardados.</div>" if guardado else ""}
+      <form method='post'>
+        <label><b>Nombre comercial</b></label><input name='nombre_comercial' value='{v("nombre_comercial")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <label><b>Titular / razón social</b></label><input name='titular' value='{v("titular")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <label><b>RUT</b></label><input name='rut' value='{v("rut")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <label><b>Domicilio fiscal</b></label><input name='domicilio_fiscal' value='{v("domicilio_fiscal")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <label><b>Teléfono</b></label><input name='telefono' value='{v("telefono")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <label><b>Email</b></label><input name='email' value='{v("email")}' style='width:100%;padding:10px;margin:5px 0 12px'>
+        <div style='background:#eff6ff;padding:12px;border-radius:10px;margin:8px 0 16px'><b>Régimen:</b> MONOTRIBUTO</div>
+        <button style='background:#2563eb;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800'>Guardar datos</button>
+      </form><p><a href='/'>← Volver al inicio</a></p>
+    """
+    return html_layout("Datos de NR Tech", card_html(contenido))
+
+
 def _asegurar_token_y_comprobante(cur, orden):
     token = orden.get("token_publico") if hasattr(orden, "get") else orden["token_publico"]
     comprobante = orden.get("comprobante_numero") if hasattr(orden, "get") else orden["comprobante_numero"]
@@ -1706,12 +1778,15 @@ def documento_publico(token):
     x = cur.fetchone(); con.close()
     if not x:
         return html_layout("No encontrado", card_html("<h2>Comprobante no encontrado</h2>"))
+    cfg = _config_empresa()
     fecha = x['fecha_entregado'] or datetime.date.today()
     vence = fecha + datetime.timedelta(days=int(x['garantia_dias'] or 30))
     vigente = datetime.date.today() <= vence
     estado_g = "Vigente" if vigente else "Vencida"
     contenido = f"""
-      <div style='text-align:center'><h2 style='margin-bottom:4px'>NR Tech</h2><div style='color:#64748b'>Tecnología en buenas manos</div></div>
+      <div style='text-align:center'><h2 style='margin-bottom:4px'>{escape(str(cfg.get('nombre_comercial') or 'NR Tech'))}</h2><div style='color:#64748b'>Tecnología en buenas manos</div></div>
+      <div style='border:2px solid #111827;padding:8px;text-align:center;font-weight:900;margin:14px 0'>MONOTRIBUTO</div>
+      <p><strong>RUT:</strong> {escape(str(cfg.get('rut') or 'Pendiente de configurar'))}</p>
       <hr style='border:0;border-top:1px solid #e5e7eb;margin:18px 0'>
       <p><strong>Comprobante:</strong> {escape(x['comprobante_numero'] or 'Pendiente')}</p>
       <p><strong>Orden:</strong> {escape(x['numero_orden'])}</p>
@@ -1746,15 +1821,18 @@ def imprimir_entrega():
     if not x:
         con.close(); return "Orden no encontrada", 404
     token, comprobante = _asegurar_token_y_comprobante(cur, x); con.commit(); con.close()
+    cfg = _config_empresa()
     fecha = x['fecha_entregado'] or datetime.date.today(); garantia=int(x['garantia_dias'] or 30); vence=fecha+datetime.timedelta(days=garantia)
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>{comprobante}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px}}.row{{margin:8px 0}}img{{width:150px;height:150px}}@media print{{button{{display:none}}}}</style></head><body>
-      <div class='box'><h1 style='margin:0'>NR Tech</h1><div>Tecnología en buenas manos</div><hr>
+      <div class='box'><h1 style='margin:0'>{escape(str(cfg.get('nombre_comercial') or 'NR Tech'))}</h1><div>Tecnología en buenas manos</div>
+      <div style='border:2px solid #111;padding:7px;text-align:center;font-weight:bold;margin:12px 0'>MONOTRIBUTO</div>
+      <div class='row'><b>RUT:</b> {escape(str(cfg.get('rut') or 'Pendiente de configurar'))}</div><hr>
       <div class='row'><b>Comprobante:</b> {comprobante}</div><div class='row'><b>Orden:</b> {escape(numero)}</div>
       <div class='row'><b>Cliente:</b> {escape(x['nombre'] or '-')}</div><div class='row'><b>Equipo:</b> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div>
       <div class='row'><b>Trabajo:</b> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</div><div class='row'><b>Importe:</b> ${float(x['presupuesto'] or 0):,.0f}</div>
       <div class='row'><b>Garantía:</b> {garantia} días — hasta {vence.strftime('%d/%m/%Y')}</div>
       <img src='/qr/{token}.png' alt='QR'><div style='font-size:12px;color:#666'>Escaneá el QR para consultar comprobante y garantía.</div>
-      <p style='font-size:11px;color:#666'>Comprobante interno / respaldo de servicio. Datos fiscales pendientes de configuración.</p></div>
+      <p style='font-size:11px;color:#666'>Respaldo de servicio. No sustituye documentación fiscal autorizada por DGI mientras el RUT/modalidad de emisión no estén configurados.</p></div>
       <button onclick='window.print()' style='margin-top:16px;padding:12px 18px'>Imprimir</button><script>setTimeout(()=>window.print(),500)</script></body></html>"""
 
 
