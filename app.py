@@ -164,6 +164,8 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_entregado DATE;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_numero TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_forma_pago TEXT;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_total NUMERIC;")
 
     # Configuración comercial/fiscal de NR Tech.
     cur.execute("""
@@ -912,6 +914,7 @@ def ver_ordenes():
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
             <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold; margin-right:10px;">Etiqueta</a>
             <a href="/entrega?numero={o['numero_orden']}" style="color:#b45309; font-weight:bold;">Entrega</a>
+            <a href="/comprobante?numero={o['numero_orden']}" style="color:#059669; font-weight:bold; margin-left:10px;">Comprobante</a>
           </td>
         </tr>
         """
@@ -1663,6 +1666,71 @@ def _buscar_entrega_por_numero(numero):
     """, (numero,))
     x = cur.fetchone(); con.close(); return x
 
+
+@app.route("/comprobante", methods=["GET", "POST"])
+def comprobante():
+    if not session.get("login"):
+        return redirect("/login")
+    numero = request.values.get("numero", "").strip()
+    if not numero:
+        return redirect("/ver_ordenes")
+    con = db(); cur = con.cursor()
+    cur.execute("""SELECT o.*, c.nombre, c.telefono, c.email FROM ordenes o JOIN clientes c ON c.id=o.cliente_id WHERE o.numero_orden=%s""", (numero,))
+    o = cur.fetchone()
+    if not o:
+        con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
+    emp = cur.fetchone()
+    if request.method == "POST":
+        forma = request.form.get("forma_pago", "").strip()
+        try: total = float(request.form.get("total", "0").replace(",", "."))
+        except: total = float(o['presupuesto'] or 0)
+        token, comp = _asegurar_token_y_comprobante(cur, o)
+        cur.execute("UPDATE ordenes SET comprobante_forma_pago=%s, comprobante_total=%s, forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE numero_orden=%s", (forma,total,forma,numero))
+        con.commit(); con.close()
+        return redirect(f"/imprimir_comprobante?numero={quote(numero)}")
+    total = o['comprobante_total'] if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
+    forma = o.get('comprobante_forma_pago') or o.get('forma_pago') or ''
+    con.close()
+    html=f"""
+      <h2 style='margin-top:0'>🧾 Generar comprobante</h2>
+      <p><b>Orden:</b> {escape(numero)} · <b>Cliente:</b> {escape(o['nombre'] or '-')}</p>
+      <p><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</p>
+      <form method='post'>
+        <input type='hidden' name='numero' value='{escape(numero)}'>
+        <label><b>Total cobrado / venta</b></label><br>
+        <input name='total' value='{total}' inputmode='decimal' style='padding:10px;width:220px;margin:6px 0 14px;border:1px solid #d1d5db;border-radius:10px'><br>
+        <label><b>Forma de pago</b></label><br>
+        <select name='forma_pago' style='padding:10px;width:240px;margin:6px 0 16px;border:1px solid #d1d5db;border-radius:10px'>
+          {''.join(f"<option value='{x}' {'selected' if forma==x else ''}>{x}</option>" for x in ['Efectivo','Transferencia','Mercado Pago','Débito','Crédito','Otro'])}
+        </select><br>
+        <button style='background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800;cursor:pointer'>Generar e imprimir</button>
+        <a href='/ver_ordenes' style='margin-left:12px'>Cancelar</a>
+      </form>
+      <p style='font-size:12px;color:#64748b;margin-top:18px'>Documento interno de la operación. La identificación fiscal usa los datos configurados de NR Tech.</p>
+    """
+    return html_layout("Comprobante", card_html(html))
+
+@app.get("/imprimir_comprobante")
+def imprimir_comprobante():
+    if not session.get("login"):
+        return redirect("/login")
+    numero=request.args.get("numero","").strip()
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT o.*,c.nombre,c.telefono,c.email FROM ordenes o JOIN clientes c ON c.id=o.cliente_id WHERE o.numero_orden=%s""",(numero,))
+    o=cur.fetchone()
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1"); emp=cur.fetchone()
+    if not o:
+        con.close(); return "Orden no encontrada",404
+    token, comp=_asegurar_token_y_comprobante(cur,o); con.commit(); con.close()
+    total=o.get('comprobante_total') if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
+    forma=o.get('comprobante_forma_pago') or o.get('forma_pago') or '-'
+    trabajo=o.get('diagnostico_tecnico') or o.get('falla_cliente') or 'Servicio técnico'
+    fecha=o.get('fecha_comprobante') or datetime.datetime.now()
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(comp)}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.head{{border-bottom:3px solid #111;padding-bottom:12px}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px;margin-top:16px}}.r{{margin:7px 0}}button{{padding:10px 16px}}@media print{{button{{display:none}}}}</style></head><body>
+      <div class='head'><h1 style='margin:0'>{escape((emp or {}).get('nombre_comercial') or 'NR Tech')}</h1><b>MONOTRIBUTO</b><div>{escape((emp or {}).get('titular') or '')}</div><div>RUT: {escape((emp or {}).get('rut') or '-')}</div><div>{escape((emp or {}).get('domicilio_fiscal') or '')}</div><div>Tel. {escape((emp or {}).get('telefono') or '')} · {escape((emp or {}).get('email') or '')}</div></div>
+      <div class='box'><h2 style='margin-top:0'>Comprobante de operación</h2><div class='r'><b>N.º:</b> {escape(comp)}</div><div class='r'><b>Fecha:</b> {fecha.strftime('%d/%m/%Y') if hasattr(fecha,'strftime') else escape(str(fecha))}</div><div class='r'><b>Orden:</b> {escape(numero)}</div><hr><div class='r'><b>Cliente:</b> {escape(o['nombre'] or '-')}</div><div class='r'><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</div><div class='r'><b>Trabajo:</b> {escape(trabajo)}</div><div class='r'><b>Forma de pago:</b> {escape(str(forma))}</div><div class='r' style='font-size:22px'><b>Total: $ {float(total or 0):,.2f}</b></div></div>
+      <p style='font-size:12px;color:#666'>Respaldo generado por el sistema de gestión NR Tech. La garantía se consulta desde la orden de entrega.</p><button onclick='window.print()'>🖨️ Imprimir</button></body></html>"""
 
 @app.route("/entrega", methods=["GET", "POST"])
 def entrega():
