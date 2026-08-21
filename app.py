@@ -1881,7 +1881,27 @@ def documento_publico(token):
       <div style='background:{'#f0fdf4' if vigente else '#fef2f2'};padding:14px;border-radius:12px;margin-top:16px'>
         <strong>Garantía: {estado_g}</strong><br>Desde {fecha.strftime('%d/%m/%Y')} hasta {vence.strftime('%d/%m/%Y')} ({int(x['garantia_dias'] or 30)} días)
       </div>
-      <p style='font-size:12px;color:#64748b;margin-top:18px'>Este documento es un respaldo de la orden y garantía de NR Tech. La parte fiscal se habilitará cuando se configure el RUT y el sistema de facturación correspondiente.</p>
+      <hr style='border:0;border-top:1px solid #e5e7eb;margin:22px 0'>
+      <div style='display:grid;grid-template-columns:1fr 180px;gap:22px;align-items:start'>
+        <div>
+          <h3 style='margin-top:0'>🛡️ Garantía del trabajo</h3>
+          <p>Este trabajo cuenta con garantía sobre el servicio realizado.</p>
+          <p><strong>Inicio:</strong> {fecha.strftime('%d/%m/%Y')}<br>
+          <strong>Vencimiento:</strong> {vence.strftime('%d/%m/%Y')}<br>
+          <strong>Duración:</strong> {int(x['garantia_dias'] or 30)} días</p>
+          <p><strong>Cubre:</strong> fallas relacionadas directamente con el trabajo realizado por NR Tech.</p>
+          <p><strong>No cubre:</strong> golpes, caídas, humedad, mal uso, daños físicos, manipulación por terceros ni daños ajenos a la reparación realizada.</p>
+        </div>
+        <div style='text-align:center'>
+          <img src='/qr/{token}.png' alt='QR de garantía' style='width:150px;height:150px;max-width:100%'>
+          <div style='font-weight:800;margin-top:6px'>Orden {escape(x['numero_orden'])}</div>
+          <div style='font-size:12px;color:#64748b;margin-top:5px'>Escaneá para verificar este comprobante y su garantía.</div>
+        </div>
+      </div>
+      <div style='background:#eff6ff;padding:12px;border-radius:10px;margin-top:18px;font-size:14px'>
+        <strong>Contacto NR Tech:</strong> {escape(str(cfg.get('telefono') or '-'))} · {escape(str(cfg.get('email') or '-'))}
+      </div>
+      <p style='font-size:12px;color:#64748b;margin-top:18px'>Documento de respaldo de la orden, pago y garantía de NR Tech.</p>
     """
     return html_layout("Comprobante y garantía", card_html(contenido))
 
