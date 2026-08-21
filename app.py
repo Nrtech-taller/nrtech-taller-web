@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("""
         INSERT INTO configuracion_empresa (id, nombre_comercial, titular, rut, domicilio_fiscal, telefono, email, regimen)
         VALUES (1, 'NR Tech', 'RODRIGUEZ PEÑA NICOLAS GUSTAVO', '221029060015',
-                'FLORES, AV. GRAL. 3249 301, MONTEVIDEO, CP 18000', '096580056',
+                'FLORES, AV. GRAL. 3249 301, MONTEVIDEO, CP 18000', '098705065',
                 'info.nrsolucionestecno@gmail.com', 'MONOTRIBUTO')
         ON CONFLICT (id) DO NOTHING
     """)
@@ -194,7 +194,7 @@ CREATE TABLE IF NOT EXISTS clientes (
             titular = COALESCE(NULLIF(titular, ''), 'RODRIGUEZ PEÑA NICOLAS GUSTAVO'),
             rut = COALESCE(NULLIF(rut, ''), '221029060015'),
             domicilio_fiscal = COALESCE(NULLIF(domicilio_fiscal, ''), 'FLORES, AV. GRAL. 3249 301, MONTEVIDEO, CP 18000'),
-            telefono = COALESCE(NULLIF(telefono, ''), '096580056'),
+            telefono = '098705065',
             email = COALESCE(NULLIF(email, ''), 'info.nrsolucionestecno@gmail.com'),
             regimen = 'MONOTRIBUTO'
         WHERE id = 1
@@ -1889,8 +1889,13 @@ def documento_publico(token):
           <p><strong>Inicio:</strong> {fecha.strftime('%d/%m/%Y')}<br>
           <strong>Vencimiento:</strong> {vence.strftime('%d/%m/%Y')}<br>
           <strong>Duración:</strong> {int(x['garantia_dias'] or 30)} días</p>
-          <p><strong>Cubre:</strong> fallas relacionadas directamente con el trabajo realizado por NR Tech.</p>
-          <p><strong>No cubre:</strong> golpes, caídas, humedad, mal uso, daños físicos, manipulación por terceros ni daños ajenos a la reparación realizada.</p>
+          <p><strong>Cubre:</strong> exclusivamente fallas relacionadas directamente con el trabajo y/o repuestos detallados en este comprobante durante el plazo indicado.</p>
+          <p><strong>No cubre:</strong> golpes, caídas, humedad o líquidos, mal uso, daños físicos, sobrecargas eléctricas, daños provocados por terceros, manipulación posterior ni fallas ajenas a la reparación realizada.</p>
+          <div style='background:#fff7ed;border:1px solid #fed7aa;padding:12px;border-radius:10px;margin-top:12px'>
+            <strong>🔒 Sello interno de garantía NR Tech</strong><br>
+            Los equipos reparados podrán llevar un sello interno de garantía. La rotura, remoción o alteración del sello podrá invalidar la garantía cuando evidencie que el equipo fue abierto o manipulado por terceros durante el período de cobertura.
+          </div>
+          <p style='font-size:13px;color:#475569'><strong>Solicitud de garantía:</strong> se deberá presentar este comprobante o identificar la orden correspondiente. NR Tech realizará una revisión técnica previa para determinar si la falla está comprendida dentro de la garantía.</p>
         </div>
         <div style='text-align:center'>
           <img src='/qr/{token}.png' alt='QR de garantía' style='width:150px;height:150px;max-width:100%'>
@@ -1935,9 +1940,20 @@ def imprimir_entrega():
       <div class='row'><b>Cliente:</b> {escape(x['nombre'] or '-')}</div><div class='row'><b>Equipo:</b> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div>
       <div class='row'><b>Trabajo:</b> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</div><div class='row'><b>Importe:</b> ${float((x.get('comprobante_total') if x.get('comprobante_total') is not None else x['presupuesto']) or 0):,.0f}</div>
       <div class='row'><b>Forma de pago:</b> {escape(str(x.get('comprobante_forma_pago') or x.get('forma_pago') or '-'))}</div>
-      <div class='row'><b>Garantía:</b> {garantia} días — hasta {vence.strftime('%d/%m/%Y')}</div>
-      <img src='/qr/{token}.png' alt='QR'><div style='font-size:12px;color:#666'>Escaneá el QR para consultar comprobante y garantía.</div>
-      <p style='font-size:11px;color:#666'>Respaldo de servicio. No sustituye documentación fiscal autorizada por DGI mientras el RUT/modalidad de emisión no estén configurados.</p></div>
+      <div class='row' style='font-size:16px;background:#f0fdf4;padding:10px;border-radius:8px'><b>Garantía:</b> {garantia} días — válida hasta {vence.strftime('%d/%m/%Y')} — Orden {escape(numero)}</div>
+      <div style='display:grid;grid-template-columns:1fr 165px;gap:18px;align-items:start;margin-top:16px'>
+        <div>
+          <h3 style='margin:0 0 8px'>Condiciones de garantía – NR Tech</h3>
+          <div style='font-size:12px;line-height:1.45'>
+            La garantía cubre exclusivamente la reparación y/o repuestos detallados en este comprobante durante el plazo indicado. No cubre golpes, caídas, humedad o líquidos, sobrecargas eléctricas, mal uso, daños físicos, daños provocados por terceros, manipulación posterior ni fallas ajenas al trabajo realizado.
+            <br><br><b>Sello interno de garantía:</b> los equipos reparados podrán llevar un sello interno NR Tech. La rotura, remoción o alteración del sello podrá invalidar la garantía cuando evidencie que el equipo fue abierto o manipulado por terceros durante el período de cobertura.
+            <br><br>Para solicitar garantía se deberá presentar este comprobante o identificar la orden correspondiente. NR Tech realizará una revisión técnica previa para determinar si la falla está comprendida dentro de la garantía.
+          </div>
+        </div>
+        <div style='text-align:center'><img src='/qr/{token}.png' alt='QR'><div style='font-size:11px;color:#666'>Escaneá para consultar y verificar comprobante y garantía.</div></div>
+      </div>
+      <div style='margin-top:14px;padding-top:10px;border-top:1px solid #ddd;font-size:12px'><b>Contacto NR Tech:</b> {escape(str(cfg.get('telefono') or '-'))} · {escape(str(cfg.get('email') or '-'))}</div>
+      <p style='font-size:11px;color:#666'>Documento de respaldo de la orden, pago y garantía de NR Tech.</p></div>
       <button onclick='window.print()' style='margin-top:16px;padding:12px 18px'>Imprimir</button><script>setTimeout(()=>window.print(),500)</script></body></html>"""
 
 
