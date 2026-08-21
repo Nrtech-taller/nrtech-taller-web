@@ -167,6 +167,34 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_forma_pago TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_total NUMERIC;")
 
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS solicitudes_ingreso (
+        id SERIAL PRIMARY KEY,
+        token TEXT UNIQUE NOT NULL,
+        estado TEXT DEFAULT 'Pendiente',
+        nombre TEXT,
+        telefono TEXT,
+        email TEXT,
+        cedula TEXT,
+        tipo_equipo TEXT,
+        marca TEXT,
+        modelo TEXT,
+        numero_serie TEXT,
+        imei TEXT,
+        falla_cliente TEXT,
+        accesorios TEXT,
+        bloqueo_tipo TEXT,
+        clave_bloqueo TEXT,
+        patron_bloqueo TEXT,
+        acepta_terminos BOOLEAN DEFAULT FALSE,
+        acepta_promociones BOOLEAN DEFAULT FALSE,
+        fecha_creacion TIMESTAMP DEFAULT NOW(),
+        fecha_envio TIMESTAMP,
+        fecha_revision TIMESTAMP
+    );
+    """)
+
     # Configuración comercial/fiscal de NR Tech.
     cur.execute("""
     CREATE TABLE IF NOT EXISTS configuracion_empresa (
@@ -495,6 +523,7 @@ def home():
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
       <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
+      <a href="/solicitudes_ingreso" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📲 Autoregistro cliente</h3><p style="margin:0;color:#6b7280;">Generar link/QR y revisar solicitudes.</p></div></a>
       <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
       <a href="/configuracion_empresa" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">⚙️ Datos de NR Tech</h3><p style="margin:0;color:#6b7280;">Datos comerciales y fiscales del taller.</p></div></a>
       <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
@@ -1955,6 +1984,227 @@ def imprimir_entrega():
       <div style='margin-top:14px;padding-top:10px;border-top:1px solid #ddd;font-size:12px'><b>Contacto NR Tech:</b> {escape(str(cfg.get('telefono') or '-'))} · {escape(str(cfg.get('email') or '-'))}</div>
       <p style='font-size:11px;color:#666'>Documento de respaldo de la orden, pago y garantía de NR Tech.</p></div>
       <button onclick='window.print()' style='margin-top:16px;padding:12px 18px'>Imprimir</button><script>setTimeout(()=>window.print(),500)</script></body></html>"""
+
+
+
+@app.route("/solicitudes_ingreso", methods=["GET", "POST"])
+def solicitudes_ingreso():
+    if not session.get("login"):
+        return redirect("/login")
+
+    con = db(); cur = con.cursor()
+
+    if request.method == "POST":
+        token = secrets.token_urlsafe(24)
+        cur.execute("INSERT INTO solicitudes_ingreso(token) VALUES(%s) RETURNING id", (token,))
+        sid = cur.fetchone()["id"]
+        con.commit(); con.close()
+        base = BASE_URL or request.url_root.rstrip("/")
+        link = f"{base}/autoregistro/{token}"
+        whatsapp = "https://wa.me/?text=" + quote(
+            "Hola, te envío el formulario de ingreso de NR Tech para completar los datos de tu equipo:\n" + link
+        )
+        return html_layout("Link creado", card_html(f"""
+          <h2 style='margin-top:0'>Solicitud creada</h2>
+          <p><strong>ID:</strong> {sid}</p>
+          <label>Link para el cliente</label>
+          <input value="{escape(link)}" readonly onclick="this.select()" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:14px">
+            <a href="{whatsapp}" target="_blank" style="background:#16a34a;color:white;padding:11px 16px;border-radius:10px;text-decoration:none;font-weight:bold">📲 Enviar por WhatsApp</a>
+            <a href="/qr_autoregistro/{token}.png" target="_blank" style="background:#7c3aed;color:white;padding:11px 16px;border-radius:10px;text-decoration:none;font-weight:bold">QR</a>
+            <a href="/solicitudes_ingreso" style="background:#e5e7eb;color:#111827;padding:11px 16px;border-radius:10px;text-decoration:none;font-weight:bold">Volver</a>
+          </div>
+        """))
+
+    cur.execute("""
+      SELECT id, token, estado, nombre, telefono, tipo_equipo, marca, modelo, fecha_creacion
+      FROM solicitudes_ingreso
+      ORDER BY CASE WHEN estado='Pendiente' THEN 0 ELSE 1 END, id DESC
+    """)
+    filas = cur.fetchall(); con.close()
+
+    html = """
+      <h2 style="margin-top:0">Autoregistro de clientes</h2>
+      <p style="color:#6b7280">Generá un link para que el cliente complete sus datos desde el celular.</p>
+      <form method="post"><button style="background:#2563eb;color:white;border:0;padding:12px 18px;border-radius:12px;font-weight:bold;cursor:pointer">➕ Crear solicitud</button></form>
+      <div style="overflow-x:auto;margin-top:18px"><table style="width:100%;border-collapse:collapse;background:white">
+        <tr style="background:#eff6ff;text-align:left">
+          <th style="padding:10px">ID</th><th style="padding:10px">Cliente</th><th style="padding:10px">Equipo</th><th style="padding:10px">Estado</th><th style="padding:10px"></th>
+        </tr>
+    """
+    for f in filas:
+        equipo = " ".join([str(f.get("tipo_equipo") or ""), str(f.get("marca") or ""), str(f.get("modelo") or "")]).strip() or "-"
+        html += f"""
+          <tr>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb">{f['id']}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb">{escape(str(f.get('nombre') or 'Pendiente de completar'))}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb">{escape(equipo)}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb">{escape(str(f['estado']))}</td>
+            <td style="padding:10px;border-bottom:1px solid #e5e7eb"><a href="/revisar_solicitud/{f['id']}" style="font-weight:bold;color:#2563eb">Revisar</a></td>
+          </tr>
+        """
+    html += "</table></div><p style='margin-top:18px'><a href='/'>🏠 Inicio</a></p>"
+    return html_layout("Autoregistro", card_html(html))
+
+
+@app.route("/autoregistro/<token>", methods=["GET", "POST"])
+def autoregistro_cliente(token):
+    con = db(); cur = con.cursor()
+    cur.execute("SELECT * FROM solicitudes_ingreso WHERE token=%s", (token,))
+    s = cur.fetchone()
+    if not s:
+        con.close()
+        return html_layout("No disponible", card_html("<h2>Link inválido o vencido</h2>"))
+
+    if request.method == "POST":
+        acepta = request.form.get("acepta_terminos") == "1"
+        if not acepta:
+            con.close()
+            return html_layout("Falta aceptar", card_html(f"<h2>Falta aceptar las condiciones</h2><p><a href='/autoregistro/{token}'>Volver</a></p>"))
+        cur.execute("""
+          UPDATE solicitudes_ingreso SET
+            estado='Completada', nombre=%s, telefono=%s, email=%s, cedula=%s,
+            tipo_equipo=%s, marca=%s, modelo=%s, numero_serie=%s, imei=%s,
+            falla_cliente=%s, accesorios=%s, bloqueo_tipo=%s, clave_bloqueo=%s,
+            patron_bloqueo=%s, acepta_terminos=%s, acepta_promociones=%s, fecha_envio=NOW()
+          WHERE token=%s
+        """, (
+          request.form.get("nombre","").strip(), request.form.get("telefono","").strip(),
+          request.form.get("email","").strip(), request.form.get("cedula","").strip(),
+          request.form.get("tipo_equipo","").strip(), request.form.get("marca","").strip(),
+          request.form.get("modelo","").strip(), request.form.get("numero_serie","").strip(),
+          request.form.get("imei","").strip(), request.form.get("falla_cliente","").strip(),
+          request.form.get("accesorios","").strip(), request.form.get("bloqueo_tipo","Sin bloqueo").strip(),
+          request.form.get("clave_bloqueo","").strip(), request.form.get("patron_bloqueo","").strip(),
+          True, request.form.get("acepta_promociones") == "1", token
+        ))
+        con.commit(); con.close()
+        return html_layout("Datos enviados", card_html("""
+          <div style='text-align:center'>
+            <h2>✅ Datos enviados</h2>
+            <p>NR Tech recibió tu información. El técnico la revisará antes de registrar el ingreso definitivo del equipo.</p>
+          </div>
+        """))
+
+    con.close()
+    return html_layout("Ingreso NR Tech", card_html(f"""
+      <div style="text-align:center"><h2 style="margin-bottom:4px">NR Tech</h2><p style="color:#64748b;margin-top:0">Ingreso de equipo al taller</p></div>
+      <form method="post">
+        <h3>👤 Tus datos</h3>
+        <label>Nombre y apellido *</label><input name="nombre" required style="width:100%;padding:10px;margin:5px 0 12px;border:1px solid #d1d5db;border-radius:10px">
+        <label>Teléfono / WhatsApp *</label><input name="telefono" required style="width:100%;padding:10px;margin:5px 0 12px;border:1px solid #d1d5db;border-radius:10px">
+        <label>Email (opcional)</label><input type="email" name="email" style="width:100%;padding:10px;margin:5px 0 12px;border:1px solid #d1d5db;border-radius:10px">
+        <label>Cédula (opcional)</label><input name="cedula" style="width:100%;padding:10px;margin:5px 0 18px;border:1px solid #d1d5db;border-radius:10px">
+
+        <h3>📱 Equipo</h3>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+          <input name="tipo_equipo" placeholder="Tipo: celular, notebook..." style="padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <input name="marca" placeholder="Marca" style="padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <input name="modelo" placeholder="Modelo" style="padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <input name="numero_serie" placeholder="N° de serie" style="padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <input name="imei" placeholder="IMEI (si aplica)" style="padding:10px;border:1px solid #d1d5db;border-radius:10px">
+        </div>
+        <label style="display:block;margin-top:12px">Falla / motivo de ingreso *</label>
+        <textarea name="falla_cliente" required rows="4" style="width:100%;padding:10px;margin-top:5px;border:1px solid #d1d5db;border-radius:10px"></textarea>
+        <label style="display:block;margin-top:12px">Accesorios entregados</label>
+        <input name="accesorios" placeholder="Ej: cargador, funda, SIM..." style="width:100%;padding:10px;margin-top:5px;border:1px solid #d1d5db;border-radius:10px">
+
+        <details style="margin-top:16px;padding:12px;border:1px solid #e5e7eb;border-radius:12px">
+          <summary style="cursor:pointer;font-weight:bold">🔐 Desbloqueo del equipo (solo si es necesario)</summary>
+          <label style="display:block;margin-top:12px">Tipo</label>
+          <select name="bloqueo_tipo" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px">
+            <option>Sin bloqueo</option><option>PIN / clave</option><option>Patrón</option>
+          </select>
+          <label style="display:block;margin-top:10px">PIN / clave</label>
+          <input name="clave_bloqueo" autocomplete="off" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px">
+          <label style="display:block;margin-top:10px">Patrón (ej: 1-2-5-8)</label>
+          <input name="patron_bloqueo" autocomplete="off" style="width:100%;padding:10px;border:1px solid #d1d5db;border-radius:10px">
+        </details>
+
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:18px;padding:12px;background:#f8fafc;border-radius:10px">
+          <input type="checkbox" name="acepta_terminos" value="1" required style="margin-top:3px">
+          <span>Acepto que NR Tech reciba el equipo para diagnóstico/reparación y que estos datos se utilicen para gestionar esta orden.</span>
+        </label>
+        <label style="display:flex;gap:10px;align-items:flex-start;margin-top:10px;padding:12px;background:#f0fdf4;border-radius:10px">
+          <input type="checkbox" name="acepta_promociones" value="1" style="margin-top:3px">
+          <span>Acepto recibir novedades y promociones de NR Tech por WhatsApp. <strong>Opcional.</strong></span>
+        </label>
+        <button style="margin-top:16px;background:#2563eb;color:white;border:0;padding:13px 20px;border-radius:12px;font-weight:bold">Enviar datos</button>
+      </form>
+    """))
+
+
+@app.get("/qr_autoregistro/<token>.png")
+def qr_autoregistro(token):
+    url = f"{BASE_URL or request.url_root.rstrip('/')}/autoregistro/{token}"
+    img = qrcode.make(url)
+    bio = BytesIO(); img.save(bio, format="PNG"); bio.seek(0)
+    return send_file(bio, mimetype="image/png")
+
+
+@app.route("/revisar_solicitud/<int:sid>", methods=["GET", "POST"])
+def revisar_solicitud(sid):
+    if not session.get("login"):
+        return redirect("/login")
+    con = db(); cur = con.cursor()
+    cur.execute("SELECT * FROM solicitudes_ingreso WHERE id=%s", (sid,))
+    s = cur.fetchone()
+    if not s:
+        con.close()
+        return html_layout("No encontrada", card_html("<h2>Solicitud no encontrada</h2>"))
+
+    if request.method == "POST":
+        telefono = str(s.get("telefono") or "").strip()
+        email = str(s.get("email") or "").strip()
+        cliente_id = None
+        if telefono:
+            cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
+            r=cur.fetchone(); cliente_id = r["id"] if r else None
+        if not cliente_id and email:
+            cur.execute("SELECT id FROM clientes WHERE email=%s LIMIT 1", (email,))
+            r=cur.fetchone(); cliente_id = r["id"] if r else None
+        if cliente_id:
+            cur.execute("""UPDATE clientes SET nombre=%s,telefono=%s,email=%s,cedula=%s WHERE id=%s""",
+                        (s.get("nombre"), telefono, email, s.get("cedula"), cliente_id))
+        else:
+            cur.execute("""INSERT INTO clientes(nombre,telefono,email,cedula) VALUES(%s,%s,%s,%s) RETURNING id""",
+                        (s.get("nombre"), telefono, email, s.get("cedula")))
+            cliente_id=cur.fetchone()["id"]
+
+        token_aprobacion = secrets.token_urlsafe(32)
+        cur.execute("""
+          INSERT INTO ordenes(numero_orden,cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,
+          estado_general,falla_cliente,diagnostico_tecnico,fecha_ingreso,estado,presupuesto,observaciones,
+          token_aprobacion,presupuesto_aprobado,presupuesto_rechazado,accesorios,bloqueo_tipo,clave_bloqueo,patron_bloqueo)
+          VALUES('',%s,%s,%s,%s,%s,%s,'',%s,'',CURRENT_DATE,'Recibido en taller',0,'',%s,FALSE,FALSE,%s,%s,%s,%s)
+          RETURNING id
+        """, (cliente_id,s.get("tipo_equipo"),s.get("marca"),s.get("modelo"),s.get("numero_serie"),
+              s.get("imei"),s.get("falla_cliente"),token_aprobacion,s.get("accesorios"),
+              s.get("bloqueo_tipo"),s.get("clave_bloqueo"),s.get("patron_bloqueo")))
+        oid=cur.fetchone()["id"]
+        numero=f"NR-{datetime.datetime.now().year}-{oid:04d}"
+        cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s",(numero,oid))
+        cur.execute("UPDATE solicitudes_ingreso SET estado='Convertida', fecha_revision=NOW() WHERE id=%s",(sid,))
+        con.commit(); con.close()
+        return redirect(f"/buscar?q={numero}")
+
+    con.close()
+    def v(k): return escape(str(s.get(k) or "-"))
+    promo = "Sí" if s.get("acepta_promociones") else "No"
+    return html_layout("Revisar solicitud", card_html(f"""
+      <h2 style="margin-top:0">Revisar solicitud #{sid}</h2>
+      <p><strong>Estado:</strong> {v('estado')}</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
+        <div><b>Cliente</b><br>{v('nombre')}<br>{v('telefono')}<br>{v('email')}<br>CI: {v('cedula')}</div>
+        <div><b>Equipo</b><br>{v('tipo_equipo')} {v('marca')} {v('modelo')}<br>Serie: {v('numero_serie')}<br>IMEI: {v('imei')}</div>
+      </div>
+      <p><b>Falla:</b><br>{v('falla_cliente')}</p>
+      <p><b>Accesorios:</b> {v('accesorios')}</p>
+      <p><b>Bloqueo:</b> {v('bloqueo_tipo')} | Clave: {v('clave_bloqueo')} | Patrón: {v('patron_bloqueo')}</p>
+      <p><b>Acepta promociones:</b> {promo}</p>
+      {"<form method='post'><button style='background:#16a34a;color:white;border:0;padding:12px 18px;border-radius:12px;font-weight:bold'>✅ Confirmar y crear orden</button></form>" if s.get("estado")=="Completada" else ""}
+      <p style="margin-top:16px"><a href="/solicitudes_ingreso">Volver</a></p>
+    """))
 
 
 if __name__ == "__main__":
