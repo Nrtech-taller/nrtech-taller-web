@@ -1729,8 +1729,9 @@ def imprimir_comprobante():
     fecha=o.get('fecha_comprobante') or datetime.datetime.now()
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(comp)}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.head{{border-bottom:3px solid #111;padding-bottom:12px}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px;margin-top:16px}}.r{{margin:7px 0}}button{{padding:10px 16px}}@media print{{button{{display:none}}}}</style></head><body>
       <div class='head'><h1 style='margin:0'>{escape((emp or {}).get('nombre_comercial') or 'NR Tech')}</h1><b>MONOTRIBUTO</b><div>{escape((emp or {}).get('titular') or '')}</div><div>RUT: {escape((emp or {}).get('rut') or '-')}</div><div>{escape((emp or {}).get('domicilio_fiscal') or '')}</div><div>Tel. {escape((emp or {}).get('telefono') or '')} · {escape((emp or {}).get('email') or '')}</div></div>
-      <div class='box'><h2 style='margin-top:0'>Comprobante de operación</h2><div class='r'><b>N.º:</b> {escape(comp)}</div><div class='r'><b>Fecha:</b> {fecha.strftime('%d/%m/%Y') if hasattr(fecha,'strftime') else escape(str(fecha))}</div><div class='r'><b>Orden:</b> {escape(numero)}</div><hr><div class='r'><b>Cliente:</b> {escape(o['nombre'] or '-')}</div><div class='r'><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</div><div class='r'><b>Trabajo:</b> {escape(trabajo)}</div><div class='r'><b>Forma de pago:</b> {escape(str(forma))}</div><div class='r' style='font-size:22px'><b>Total: $ {float(total or 0):,.2f}</b></div></div>
-      <p style='font-size:12px;color:#666'>Respaldo generado por el sistema de gestión NR Tech. La garantía se consulta desde la orden de entrega.</p><button onclick='window.print()'>🖨️ Imprimir</button></body></html>"""
+      <div class='box'><h2 style='margin-top:0'>Comprobante de operación</h2><div class='r'><b>N.º:</b> {escape(comp)}</div><div class='r'><b>Fecha:</b> {fecha.strftime('%d/%m/%Y') if hasattr(fecha,'strftime') else escape(str(fecha))}</div><div class='r'><b>Orden:</b> {escape(numero)}</div><hr><div class='r'><b>Cliente:</b> {escape(o['nombre'] or '-')}</div><div class='r'><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</div><div class='r'><b>Trabajo:</b> {escape(trabajo)}</div><div class='r'><b>Forma de pago:</b> {escape(str(forma))}</div><div class='r' style='font-size:22px'><b>Total: $ {float(total or 0):,.2f}</b></div>
+      {f"<hr><div class='r'><b>Garantía:</b> {int(o.get('garantia_dias') or 30)} días</div><div class='r'><img src='/qr/{token}.png' style='width:120px;height:120px' alt='QR'><br><small>Escaneá para ver comprobante y garantía.</small></div>" if o.get('fecha_entregado') else ''}</div>
+      <p style='font-size:12px;color:#666'>Respaldo generado por el sistema de gestión NR Tech.</p><button onclick='window.print()'>🖨️ Imprimir</button></body></html>"""
 
 @app.route("/entrega", methods=["GET", "POST"])
 def entrega():
@@ -1751,9 +1752,15 @@ def entrega():
         if not orden:
             con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
         token, comprobante = _asegurar_token_y_comprobante(cur, orden)
+        # Si todavía no se generó el comprobante V1, usamos el presupuesto como total inicial.
+        # Luego puede editarse desde el botón Comprobante sin perder la entrega/garantía.
         cur.execute("""
             UPDATE ordenes
-            SET garantia_dias=%s, fecha_entregado=COALESCE(fecha_entregado, CURRENT_DATE), estado='Entregado'
+            SET garantia_dias=%s,
+                fecha_entregado=COALESCE(fecha_entregado, CURRENT_DATE),
+                estado='Entregado',
+                comprobante_total=COALESCE(comprobante_total, presupuesto),
+                comprobante_forma_pago=COALESCE(NULLIF(comprobante_forma_pago,''), forma_pago)
             WHERE numero_orden=%s
         """, (garantia_dias, numero))
         con.commit(); con.close()
@@ -1767,7 +1774,7 @@ def entrega():
             msg["Subject"] = f"Comprobante y garantía {numero} – NR Tech"
             msg["From"] = formataddr(("NR Tech – Tecnología en buenas manos", REMITENTE_EMAIL))
             msg["To"] = orden2["email"]
-            msg.set_content(f"Hola {orden2['nombre']}.\n\nTu reparación {numero} fue entregada.\nComprobante: {comprobante}\nGarantía: {garantia_dias} días.\nVer comprobante y garantía: {url_publica}\n\nNR Tech")
+            msg.set_content(f"Hola {orden2['nombre']}.\n\nTu reparación {numero} fue entregada.\nComprobante: {comprobante}\nGarantía: {garantia_dias} días.\nVer comprobante, QR y garantía: {url_publica}\n\nNR Tech")
             msg.add_alternative(f"""
               <div style='font-family:Arial,sans-serif;max-width:640px;margin:auto'>
                 <h2>NR Tech</h2><p>Hola <strong>{escape(orden2['nombre'] or '')}</strong>.</p>
@@ -1790,7 +1797,7 @@ def entrega():
             tel = ''.join(ch for ch in str(orden2['telefono'] or '') if ch.isdigit())
             if tel and not tel.startswith('598'):
                 tel = '598' + tel.lstrip('0')
-            texto = f"Hola {orden2['nombre']}, tu equipo ya fue entregado por NR Tech. Orden {numero}. Comprobante {comprobante}. Garantía: {garantia_dias} días. Podés ver tu comprobante y garantía acá: {url_publica}"
+            texto = f"Hola {orden2['nombre']}, tu equipo ya fue entregado por NR Tech. Orden {numero}. Comprobante {comprobante}. Garantía: {garantia_dias} días. Podés ver tu comprobante, QR y garantía acá: {url_publica}"
             destino = f"https://wa.me/{tel}?text={quote(texto)}" if tel else f"https://wa.me/?text={quote(texto)}"
             return redirect(destino)
         return redirect(f"/entrega?numero={numero}")
@@ -1803,7 +1810,9 @@ def entrega():
         return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
     garantia = int(x["garantia_dias"] or 30)
     enviado = request.args.get("enviado") == "1"
-    pres = float(x["presupuesto"] or 0)
+    total_entrega = float((x.get('comprobante_total') if x.get('comprobante_total') is not None else x['presupuesto']) or 0)
+    comp_actual = x.get('comprobante_numero') or 'Todavía no generado'
+    forma_actual = x.get('comprobante_forma_pago') or x.get('forma_pago') or '-'
     contenido = f"""
       <h2 style='margin-top:0'>📦 Entrega de {escape(numero)}</h2>
       <p style='color:#64748b'>Cerrá la reparación y elegí cómo darle el respaldo al cliente.</p>
@@ -1811,7 +1820,12 @@ def entrega():
       <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:18px'>
         <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Cliente</small><div style='font-weight:800'>{escape(x['nombre'] or '-')}</div></div>
         <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Equipo</small><div style='font-weight:800'>{escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div></div>
-        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Total</small><div style='font-weight:800'>${pres:,.0f}</div></div>
+        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Total</small><div style='font-weight:800'>${total_entrega:,.0f}</div></div>
+        <div style='background:#f8fafc;padding:13px;border-radius:12px'><small>Comprobante</small><div style='font-weight:800'>{escape(str(comp_actual))}</div><small>{escape(str(forma_actual))}</small></div>
+      </div>
+      <div style='display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px'>
+        <a href='/comprobante?numero={quote(numero)}' style='background:#059669;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:800'>🧾 Revisar / generar comprobante</a>
+        {f"<a href='/documento/{x['token_publico']}' target='_blank' style='background:#7c3aed;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:800'>🔗 Ver comprobante + garantía</a>" if x.get('token_publico') else ''}
       </div>
       <form method='post'>
         <input type='hidden' name='numero' value='{escape(numero)}'>
@@ -1839,7 +1853,8 @@ def documento_publico(token):
     con = db(); cur = con.cursor()
     cur.execute("""
       SELECT o.numero_orden,o.tipo_equipo,o.marca,o.modelo,o.diagnostico_tecnico,o.presupuesto,
-             o.garantia_dias,o.fecha_entregado,o.comprobante_numero,o.forma_pago,c.nombre
+             o.garantia_dias,o.fecha_entregado,o.comprobante_numero,o.forma_pago,
+             o.comprobante_total,o.comprobante_forma_pago,c.nombre
       FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
       WHERE o.token_publico=%s
     """, (token,))
@@ -1861,7 +1876,8 @@ def documento_publico(token):
       <p><strong>Cliente:</strong> {escape(x['nombre'] or '-')}</p>
       <p><strong>Equipo:</strong> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</p>
       <p><strong>Trabajo:</strong> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</p>
-      <p><strong>Importe:</strong> ${float(x['presupuesto'] or 0):,.0f}</p>
+      <p><strong>Importe:</strong> ${float((x.get('comprobante_total') if x.get('comprobante_total') is not None else x['presupuesto']) or 0):,.0f}</p>
+      <p><strong>Forma de pago:</strong> {escape(str(x.get('comprobante_forma_pago') or x.get('forma_pago') or '-'))}</p>
       <div style='background:{'#f0fdf4' if vigente else '#fef2f2'};padding:14px;border-radius:12px;margin-top:16px'>
         <strong>Garantía: {estado_g}</strong><br>Desde {fecha.strftime('%d/%m/%Y')} hasta {vence.strftime('%d/%m/%Y')} ({int(x['garantia_dias'] or 30)} días)
       </div>
@@ -1897,7 +1913,8 @@ def imprimir_entrega():
       <div class='row'><b>RUT:</b> {escape(str(cfg.get('rut') or 'Pendiente de configurar'))}</div><hr>
       <div class='row'><b>Comprobante:</b> {comprobante}</div><div class='row'><b>Orden:</b> {escape(numero)}</div>
       <div class='row'><b>Cliente:</b> {escape(x['nombre'] or '-')}</div><div class='row'><b>Equipo:</b> {escape((x['tipo_equipo'] or '')+' '+(x['marca'] or '')+' '+(x['modelo'] or ''))}</div>
-      <div class='row'><b>Trabajo:</b> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</div><div class='row'><b>Importe:</b> ${float(x['presupuesto'] or 0):,.0f}</div>
+      <div class='row'><b>Trabajo:</b> {escape(x['diagnostico_tecnico'] or 'Reparación / servicio técnico')}</div><div class='row'><b>Importe:</b> ${float((x.get('comprobante_total') if x.get('comprobante_total') is not None else x['presupuesto']) or 0):,.0f}</div>
+      <div class='row'><b>Forma de pago:</b> {escape(str(x.get('comprobante_forma_pago') or x.get('forma_pago') or '-'))}</div>
       <div class='row'><b>Garantía:</b> {garantia} días — hasta {vence.strftime('%d/%m/%Y')}</div>
       <img src='/qr/{token}.png' alt='QR'><div style='font-size:12px;color:#666'>Escaneá el QR para consultar comprobante y garantía.</div>
       <p style='font-size:11px;color:#666'>Respaldo de servicio. No sustituye documentación fiscal autorizada por DGI mientras el RUT/modalidad de emisión no estén configurados.</p></div>
