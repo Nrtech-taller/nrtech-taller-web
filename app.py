@@ -1987,6 +1987,107 @@ def imprimir_entrega():
 
 
 
+
+@app.get("/etiqueta")
+def etiqueta():
+    if not session.get("login"):
+        return redirect("/login")
+
+    numero = request.args.get("numero", "").strip()
+    if not numero:
+        return redirect("/ver_ordenes")
+
+    con = db()
+    cur = con.cursor()
+    cur.execute("""
+        SELECT o.numero_orden, o.tipo_equipo, o.marca, o.modelo, o.imei, o.numero_serie,
+               o.accesorios, c.nombre
+        FROM ordenes o
+        JOIN clientes c ON o.cliente_id = c.id
+        WHERE o.numero_orden = %s
+    """, (numero,))
+    x = cur.fetchone()
+    con.close()
+
+    if not x:
+        return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+
+    equipo = " ".join([
+        str(x.get("tipo_equipo") or ""),
+        str(x.get("marca") or ""),
+        str(x.get("modelo") or "")
+    ]).strip() or "Equipo"
+
+    identificador = ""
+    if x.get("imei"):
+        identificador = f"IMEI: {escape(str(x['imei']))}"
+    elif x.get("numero_serie"):
+        identificador = f"Serie: {escape(str(x['numero_serie']))}"
+
+    accesorios = str(x.get("accesorios") or "").strip()
+
+    etiqueta_accesorios = ""
+    if accesorios:
+        etiqueta_accesorios = f"""
+        <div class="etiqueta">
+          <div class="marca">NR Tech</div>
+          <div class="tipo">ACCESORIOS</div>
+          <div class="orden">{escape(str(x['numero_orden']))}</div>
+          <div class="cliente">{escape(str(x.get('nombre') or '-'))}</div>
+          <div class="dato">{escape(accesorios)}</div>
+        </div>
+        """
+
+    return f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Etiquetas {escape(str(x['numero_orden']))}</title>
+<style>
+  @page {{ margin: 6mm; }}
+  body {{ font-family: Arial, sans-serif; margin: 0; padding: 12px; color:#111827; }}
+  .acciones {{ margin-bottom: 14px; }}
+  .etiquetas {{ display:flex; flex-wrap:wrap; gap:12px; }}
+  .etiqueta {{
+    width: 72mm;
+    min-height: 38mm;
+    border: 2px solid #111827;
+    border-radius: 8px;
+    padding: 8px;
+    box-sizing: border-box;
+    page-break-inside: avoid;
+  }}
+  .marca {{ font-size: 16px; font-weight: 900; }}
+  .tipo {{ font-size: 11px; font-weight: 800; margin-top: 3px; }}
+  .orden {{ font-size: 18px; font-weight: 900; margin: 6px 0; }}
+  .cliente {{ font-size: 13px; font-weight: 700; }}
+  .dato {{ font-size: 12px; margin-top: 5px; line-height:1.3; }}
+  @media print {{
+    .acciones {{ display:none; }}
+    body {{ padding:0; }}
+  }}
+</style>
+</head>
+<body>
+  <div class="acciones">
+    <button onclick="window.print()" style="padding:10px 16px;border:0;border-radius:10px;background:#2563eb;color:white;font-weight:bold;cursor:pointer;">🖨️ Imprimir etiquetas</button>
+  </div>
+
+  <div class="etiquetas">
+    <div class="etiqueta">
+      <div class="marca">NR Tech</div>
+      <div class="tipo">EQUIPO</div>
+      <div class="orden">{escape(str(x['numero_orden']))}</div>
+      <div class="cliente">{escape(str(x.get('nombre') or '-'))}</div>
+      <div class="dato">{escape(equipo)}</div>
+      {f'<div class="dato">{identificador}</div>' if identificador else ''}
+    </div>
+    {etiqueta_accesorios}
+  </div>
+</body>
+</html>"""
+
+
 @app.route("/solicitudes_ingreso", methods=["GET", "POST"])
 def solicitudes_ingreso():
     if not session.get("login"):
