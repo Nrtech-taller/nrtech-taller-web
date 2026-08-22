@@ -829,6 +829,81 @@ def venta_imprimir(vid):
     </body></html>"""
 
 
+
+@app.get("/finanzas_pendientes")
+def finanzas_pendientes():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.args.get("anio",hoy.year))
+        mes=int(request.args.get("mes",hoy.month))
+    except Exception:
+        anio,mes=hoy.year,hoy.month
+
+    con=db(); cur=con.cursor()
+    cur.execute("""
+      SELECT o.numero_orden,c.nombre,c.telefono,o.tipo_equipo,o.marca,o.modelo,
+             COALESCE(o.comprobante_total,o.presupuesto,0) AS total,
+             COALESCE(o.cobrado,0) AS cobrado,
+             GREATEST(COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.cobrado,0),0) AS saldo,
+             COALESCE(o.fecha_entregado,o.fecha_comprobante::date) AS fecha
+      FROM ordenes o
+      JOIN clientes c ON c.id=o.cliente_id
+      WHERE o.estado='Entregado'
+        AND COALESCE(o.fecha_entregado,o.fecha_comprobante::date) IS NOT NULL
+        AND EXTRACT(YEAR FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
+        AND EXTRACT(MONTH FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
+        AND GREATEST(COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.cobrado,0),0) > 0
+      ORDER BY fecha DESC,o.id DESC
+    """,(anio,mes))
+    filas=cur.fetchall(); con.close()
+
+    total_pendiente=sum(float(r.get("saldo") or 0) for r in filas)
+    html_filas=""
+    for r in filas:
+        equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip() or "-"
+        html_filas+=f"""
+          <tr>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r.get("fecha") or "-"))}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r["numero_orden"]))}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r.get("nombre") or "-"))}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(equipo)}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(r.get("total") or 0):,.2f}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(r.get("cobrado") or 0):,.2f}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#b91c1c'>$ {float(r.get("saldo") or 0):,.2f}</td>
+            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>
+              <a href='/editar?numero={quote(str(r["numero_orden"]))}' style='color:#2563eb;font-weight:bold'>Abrir orden</a>
+            </td>
+          </tr>
+        """
+
+    return html_layout("Pendientes de cobro",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div>
+          <h2 style='margin:0'>💸 Pendientes de cobro</h2>
+          <p style='color:#64748b'>Detalle de órdenes entregadas con saldo pendiente del período {mes:02d}/{anio}.</p>
+        </div>
+        <a href='/finanzas?anio={anio}&mes={mes}' style='font-weight:bold;color:#2563eb'>← Volver a Finanzas</a>
+      </div>
+      <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px;margin:15px 0'>
+        <small>Saldo total pendiente</small>
+        <div style='font-size:28px;font-weight:900;color:#b91c1c'>$ {total_pendiente:,.2f}</div>
+      </div>
+      <div style='overflow-x:auto'>
+        <table style='width:100%;border-collapse:collapse'>
+          <tr style='background:#eff6ff;text-align:left'>
+            <th style='padding:10px'>Fecha</th><th style='padding:10px'>Orden</th><th style='padding:10px'>Cliente</th>
+            <th style='padding:10px'>Equipo</th><th style='padding:10px'>Total</th><th style='padding:10px'>Cobrado</th>
+            <th style='padding:10px'>Saldo</th><th style='padding:10px'></th>
+          </tr>
+          {html_filas or "<tr><td colspan='8' style='padding:18px;text-align:center;color:#64748b'>No hay saldos pendientes en este período.</td></tr>"}
+        </table>
+      </div>
+    """))
+
+
 @app.get("/ventas")
 def listar_ventas():
     if not session.get("login"):
@@ -1013,7 +1088,12 @@ def finanzas():
       <div style="background:white;border:1px solid #bfdbfe;border-radius:14px;padding:15px;"><small>Facturación bruta</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('facturado'))}</div></div>
       <div style="background:white;border:1px solid #bbf7d0;border-radius:14px;padding:15px;"><small>Cobrado</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('cobrado'))}</div></div>
       <div style="background:white;border:1px solid #fed7aa;border-radius:14px;padding:15px;"><small>Costo repuestos</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('costos'))}</div></div>
-      <div style="background:white;border:1px solid #fecaca;border-radius:14px;padding:15px;"><small>Pendiente de cobrar</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('pendiente'))}</div></div>
+      <a href="/finanzas_pendientes?anio={anio}&mes={mes}" style="text-decoration:none;color:inherit">
+        <div style="background:white;border:1px solid #fecaca;border-radius:14px;padding:15px;cursor:pointer;">
+          <small>Pendiente de cobrar · ver detalle</small>
+          <div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('pendiente'))}</div>
+        </div>
+      </a>
       <div style="background:white;border:1px solid #c7d2fe;border-radius:14px;padding:15px;"><small>Ganancia estimada</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('margen'))}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>Trabajos entregados</small><div style="font-size:24px;font-weight:800;">{int(mes_data.get('trabajos') or 0)}</div></div>
     </div>
