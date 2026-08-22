@@ -625,15 +625,66 @@ def venta_directa():
 def venta_comprobante(vid):
     if not session.get("login"): return redirect("/login")
     con=db(); cur=con.cursor()
-    cur.execute("SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s",(vid,)); v=cur.fetchone()
+    cur.execute("SELECT v.*,c.nombre,c.telefono,c.email FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s",(vid,)); v=cur.fetchone()
     if not v: con.close(); return redirect("/")
     cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,)); items=cur.fetchall(); con.close()
     filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in items)
     base=BASE_URL or request.url_root.rstrip("/"); pub=f"{base}/venta_publica/{v['token_publico']}"
-    wa="https://wa.me/?text="+quote(f"NR Tech - {v['comprobante_numero']}\nTotal: $ {float(v['total']):,.2f}\n{pub}")
+    tel="".join(ch for ch in str(v.get("telefono") or "") if ch.isdigit())
+    if tel.startswith("0"): tel="598"+tel[1:]
+    wa_text=quote(f"Hola {v.get('nombre') or ''}, te enviamos tu factura {v['comprobante_numero']} de NR Tech.\nTotal: $ {float(v['total']):,.2f}\nFactura y garantía: {pub}")
+    wa=f"https://wa.me/{tel}?text={wa_text}" if tel else f"https://wa.me/?text={wa_text}"
+    email_btn = f"<a href='/venta_email/{vid}' style='background:#7c3aed;color:white;padding:11px;text-decoration:none;border-radius:9px'>✉️ Enviar por email</a>" if v.get("email") else "<span style='padding:11px;color:#94a3b8'>✉️ Sin email cargado</span>"
     return html_layout("Venta",card_html(f"""<h2>✅ Venta registrada / factura emitida</h2><p><b>{v['comprobante_numero']}</b></p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2>
-    <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 WhatsApp</a><a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a><a href='/ventas' style='background:#475569;color:white;padding:11px;text-decoration:none;border-radius:9px'>← Volver a ventas</a><a href='/' style='background:#0f172a;color:white;padding:11px;text-decoration:none;border-radius:9px'>🏠 Inicio</a></div>
+    <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 Enviar por WhatsApp</a>{email_btn}<a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a><a href='/ventas' style='background:#475569;color:white;padding:11px;text-decoration:none;border-radius:9px'>← Volver a ventas</a><a href='/' style='background:#0f172a;color:white;padding:11px;text-decoration:none;border-radius:9px'>🏠 Inicio</a></div>
     <p style='color:#64748b'>Esta factura ya quedó emitida y no se duplica al volver a abrirla.</p>"""))
+
+
+@app.get("/venta_email/<int:vid>")
+def venta_email(vid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT v.*,c.nombre,c.email FROM ventas v
+                   LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s""",(vid,))
+    v=cur.fetchone(); con.close()
+    if not v:
+        return redirect("/ventas")
+    if not v.get("email"):
+        flash("El cliente no tiene email cargado.","error")
+        return redirect(f"/venta_comprobante/{vid}")
+    base=BASE_URL or request.url_root.rstrip("/")
+    pub=f"{base}/venta_publica/{v['token_publico']}"
+    asunto=f"NR Tech - Factura {v['comprobante_numero']}"
+    cuerpo=f"""Hola {v.get('nombre') or ''},
+
+Te enviamos la factura de tu compra en NR Tech.
+
+Factura: {v['comprobante_numero']}
+Total: $ {float(v['total']):,.2f}
+Forma de pago: {v.get('forma_pago') or '-'}
+
+Podés consultar tu factura y las condiciones de garantía aquí:
+{pub}
+
+NR Tech
+Tecnología en buenas manos
+"""
+    if not REMITENTE_EMAIL or not CONTRASENA_APP:
+        flash("No se pudo enviar el email: falta configurar la cuenta de correo.","error")
+        return redirect(f"/venta_comprobante/{vid}")
+    try:
+        msg=EmailMessage()
+        msg["Subject"]=asunto; msg["From"]=REMITENTE_EMAIL; msg["To"]=v["email"]
+        msg.set_content(cuerpo)
+        with smtplib.SMTP_SSL("smtp.gmail.com",465,timeout=25) as smtp:
+            smtp.login(REMITENTE_EMAIL,CONTRASENA_APP); smtp.send_message(msg)
+        flash(f"Factura enviada correctamente por email a {v['email']}.","success")
+    except Exception as e:
+        print("Error email venta:",e)
+        flash("No se pudo enviar la factura por email.","error")
+    return redirect(f"/venta_comprobante/{vid}")
+
 
 @app.get("/venta_publica/<token>")
 def venta_publica(token):
