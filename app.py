@@ -554,6 +554,7 @@ def home():
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
       <a href="/venta" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛒 Nueva venta</h3><p style="margin:0;color:#6b7280;">Accesorios y ventas de mostrador.</p></div></a>
+      <a href="/ventas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📚 Ventas</h3><p style="margin:0;color:#6b7280;">Historial de ventas y facturas emitidas.</p></div></a>
       <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
@@ -597,11 +598,11 @@ def venta_directa():
             cid=cur.fetchone()["id"]
         token=secrets.token_urlsafe(24)
         cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico) VALUES('',%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token))
-        vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-VENTA-{datetime.datetime.now().year}-{vid:05d}"
+        vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-FAC-{datetime.datetime.now().year}-{vid:05d}"
         cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
         for it in items: cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario) VALUES(%s,%s,%s,%s,%s)",(vid,*it))
         con.commit(); con.close()
-        flash(f"Venta {numero} registrada por $ {total:,.2f}.","success")
+        flash(f"Venta {numero} registrada y factura {comp} emitida por $ {total:,.2f}.","success")
         return redirect(f"/venta_comprobante/{vid}")
     return html_layout("Nueva venta",card_html("""
     <h2 style='margin-top:0'>🛒 Nueva venta</h2><p style='color:#64748b'>Para cargadores, cables, fundas, vidrios y otras ventas sin reparación.</p>
@@ -623,9 +624,9 @@ def venta_comprobante(vid):
     filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in items)
     base=BASE_URL or request.url_root.rstrip("/"); pub=f"{base}/venta_publica/{v['token_publico']}"
     wa="https://wa.me/?text="+quote(f"NR Tech - {v['comprobante_numero']}\nTotal: $ {float(v['total']):,.2f}\n{pub}")
-    return html_layout("Venta",card_html(f"""<h2>✅ Venta registrada</h2><p><b>{v['comprobante_numero']}</b></p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2>
+    return html_layout("Venta",card_html(f"""<h2>✅ Venta registrada / factura emitida</h2><p><b>{v['comprobante_numero']}</b></p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2>
     <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 WhatsApp</a><a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a></div>
-    <p style='color:#64748b'>Este comprobante ya quedó generado y no se duplica al volver a abrirlo.</p>"""))
+    <p style='color:#64748b'>Esta factura ya quedó emitida y no se duplica al volver a abrirla.</p>"""))
 
 @app.get("/venta_publica/<token>")
 def venta_publica(token):
@@ -633,7 +634,7 @@ def venta_publica(token):
     if not v: con.close(); return "Comprobante no encontrado",404
     cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(v["id"],)); its=cur.fetchall(); con.close()
     filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
-    return html_layout("Comprobante",card_html(f"<h2>NR Tech</h2><p><b>{v['comprobante_numero']}</b></p><p>Cliente: {escape(str(v.get('nombre') or 'Consumidor final'))}</p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p>"))
+    return html_layout("Comprobante",card_html(f"<h2>NR Tech</h2><p><strong>FACTURA</strong><br><b>{v['comprobante_numero']}</b></p><p>Cliente: {escape(str(v.get('nombre') or 'Consumidor final'))}</p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p>"))
 
 @app.get("/venta_imprimir/<int:vid>")
 def venta_imprimir(vid):
@@ -642,7 +643,96 @@ def venta_imprimir(vid):
     if not v: con.close(); return redirect("/")
     cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,)); its=cur.fetchall(); con.close()
     filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
-    return f"""<!doctype html><html><head><meta charset='utf-8'><style>body{{font-family:Arial;max-width:760px;margin:25px auto}}table{{width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>🖨️ Imprimir</button><h1>NR Tech</h1><h3>{v['comprobante_numero']}</h3><table>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p></body></html>"""
+    return f"""<!doctype html><html><head><meta charset='utf-8'><style>body{{font-family:Arial;max-width:760px;margin:25px auto}}table{{width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>🖨️ Imprimir</button><h1>NR Tech</h1><h2>FACTURA</h2><h3>{v['comprobante_numero']}</h3><table>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p></body></html>"""
+
+
+
+@app.get("/ventas")
+def listar_ventas():
+    if not session.get("login"):
+        return redirect("/login")
+    con=db(); cur=con.cursor()
+    cur.execute("""
+      SELECT v.id,v.numero_venta,v.fecha,v.forma_pago,v.total,v.costo_total,v.comprobante_numero,
+             c.nombre,c.telefono
+      FROM ventas v
+      LEFT JOIN clientes c ON c.id=v.cliente_id
+      ORDER BY v.id DESC
+    """)
+    ventas=cur.fetchall(); con.close()
+    filas=""
+    for v in ventas:
+        gan=float(v.get("total") or 0)-float(v.get("costo_total") or 0)
+        filas+=f"""
+        <tr>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v['fecha'].strftime('%d/%m/%Y %H:%M') if hasattr(v['fecha'],'strftime') else v['fecha']))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v['numero_venta']))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v['comprobante_numero']))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v.get('nombre') or 'Consumidor final'))}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(v.get('total') or 0):,.2f}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {gan:,.2f}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>
+            <a href='/venta_comprobante/{v["id"]}' style='color:#2563eb;font-weight:bold;margin-right:10px'>Ver</a>
+            <a href='/eliminar_venta?id={v["id"]}' style='color:#dc2626;font-weight:bold'>Eliminar</a>
+          </td>
+        </tr>"""
+    return html_layout("Ventas",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>📚 Ventas</h2><p style='color:#64748b'>Historial de ventas directas y facturas emitidas.</p></div>
+        <a href='/venta' style='background:#059669;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>🛒 Nueva venta</a>
+      </div>
+      <div style='overflow-x:auto;margin-top:16px'>
+      <table style='width:100%;border-collapse:collapse'>
+        <tr style='background:#eff6ff;text-align:left'>
+          <th style='padding:10px'>Fecha</th><th style='padding:10px'>Venta</th><th style='padding:10px'>Factura</th>
+          <th style='padding:10px'>Cliente</th><th style='padding:10px'>Total</th><th style='padding:10px'>Ganancia</th><th style='padding:10px'></th>
+        </tr>
+        {filas or "<tr><td colspan='7' style='padding:18px;text-align:center;color:#64748b'>No hay ventas registradas.</td></tr>"}
+      </table></div>
+      <p style='margin-top:16px'><a href='/'>🏠 Inicio</a></p>
+    """))
+
+
+@app.route("/eliminar_venta", methods=["GET","POST"])
+def eliminar_venta():
+    if not session.get("login"):
+        return redirect("/login")
+    try:
+        vid=int(request.values.get("id","0"))
+    except:
+        return redirect("/ventas")
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s""",(vid,))
+    v=cur.fetchone()
+    if not v:
+        con.close(); return redirect("/ventas")
+    if request.method=="POST":
+        if request.form.get("confirmar")!="ELIMINAR":
+            con.close()
+            return html_layout("Confirmación",card_html("<h2>No se eliminó la venta</h2><p>Debés escribir ELIMINAR exactamente.</p>"))
+        cur.execute("DELETE FROM ventas WHERE id=%s",(vid,))
+        con.commit(); con.close()
+        flash(f"Venta {v['numero_venta']} eliminada. También dejó de contar en Finanzas.","success")
+        return redirect("/ventas")
+    con.close()
+    return html_layout("Eliminar venta",card_html(f"""
+      <h2 style='color:#b91c1c;margin-top:0'>🗑️ Eliminar venta</h2>
+      <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px'>
+        Venta: <b>{escape(str(v['numero_venta']))}</b><br>
+        Factura: <b>{escape(str(v['comprobante_numero']))}</b><br>
+        Cliente: {escape(str(v.get('nombre') or 'Consumidor final'))}<br>
+        Total: <b>$ {float(v.get('total') or 0):,.2f}</b>
+      </div>
+      <p><strong>Al eliminarla también se descontará automáticamente de Finanzas.</strong></p>
+      <p style='color:#b45309;font-size:13px'>Usá esta opción para pruebas o registros cargados por error. Una factura fiscal real debería anularse, no borrarse.</p>
+      <form method='post'>
+        <input type='hidden' name='id' value='{vid}'>
+        <label>Escribí <b>ELIMINAR</b>:</label><br>
+        <input name='confirmar' autocomplete='off' style='padding:10px;margin:8px 0;border:1px solid #d1d5db;border-radius:9px'>
+        <br><button style='background:#dc2626;color:white;border:0;padding:11px 16px;border-radius:10px;font-weight:bold'>Eliminar venta</button>
+        <a href='/ventas' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
 
 
 @app.get("/finanzas")
