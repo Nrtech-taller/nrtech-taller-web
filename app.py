@@ -133,6 +133,22 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS notas TEXT;")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_alta TIMESTAMP DEFAULT NOW();")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS acepta_promociones BOOLEAN DEFAULT FALSE;")
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stock_productos (
+        id SERIAL PRIMARY KEY, codigo TEXT UNIQUE, grupo TEXT NOT NULL, nombre TEXT NOT NULL,
+        categoria TEXT, marca TEXT, modelos_compatibles TEXT, proveedor TEXT,
+        costo NUMERIC DEFAULT 0, precio_venta NUMERIC DEFAULT 0, cantidad INTEGER DEFAULT 0,
+        stock_minimo INTEGER DEFAULT 0, ubicacion TEXT, activo BOOLEAN DEFAULT TRUE,
+        fecha_alta TIMESTAMP DEFAULT NOW(), fecha_actualizacion TIMESTAMP DEFAULT NOW()
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS stock_movimientos (
+        id SERIAL PRIMARY KEY, producto_id INTEGER REFERENCES stock_productos(id) ON DELETE CASCADE,
+        tipo TEXT NOT NULL, cantidad INTEGER NOT NULL, cantidad_anterior INTEGER, cantidad_nueva INTEGER,
+        costo_unitario NUMERIC, proveedor TEXT, referencia TEXT, observacion TEXT, fecha TIMESTAMP DEFAULT NOW()
+    );
+    """)
     cur.execute("""CREATE TABLE IF NOT EXISTS ventas (
       id SERIAL PRIMARY KEY, numero_venta TEXT UNIQUE, cliente_id INTEGER REFERENCES clientes(id),
       fecha TIMESTAMP DEFAULT NOW(), forma_pago TEXT, total NUMERIC DEFAULT 0,
@@ -558,6 +574,7 @@ def home():
       <a href="/venta" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛒 Nueva venta</h3><p style="margin:0;color:#6b7280;">Accesorios y ventas de mostrador.</p></div></a>
       <a href="/ventas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📚 Ventas</h3><p style="margin:0;color:#6b7280;">Historial de ventas y facturas emitidas.</p></div></a>
       <a href="/facturacion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #c7d2fe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📑 Facturación</h3><p style="margin:0;color:#6b7280;">Archivo mensual de todas las facturas.</p></div></a>
+      <a href="/stock" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #fde68a;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📦 Stock</h3><p style="margin:0;color:#6b7280;">Repuestos, accesorios y consumibles.</p></div></a>
       <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
@@ -992,6 +1009,100 @@ def eliminar_venta():
       </form>
     """))
 
+
+
+
+@app.get("/stock")
+def stock():
+    if not session.get("login"): return redirect("/login")
+    q=request.args.get("q","").strip(); grupo=request.args.get("grupo","").strip()
+    con=db(); cur=con.cursor(); sql="SELECT * FROM stock_productos WHERE activo=TRUE"; params=[]
+    if grupo: sql+=" AND grupo=%s"; params.append(grupo)
+    if q:
+        like=f"%{q}%"; sql+=" AND (COALESCE(codigo,'') ILIKE %s OR COALESCE(nombre,'') ILIKE %s OR COALESCE(categoria,'') ILIKE %s OR COALESCE(marca,'') ILIKE %s OR COALESCE(modelos_compatibles,'') ILIKE %s OR COALESCE(proveedor,'') ILIKE %s)"; params += [like]*6
+    sql+=" ORDER BY CASE WHEN cantidad<=stock_minimo THEN 0 ELSE 1 END, grupo,nombre"
+    cur.execute(sql,tuple(params)); productos=cur.fetchall()
+    cur.execute("""SELECT COUNT(*) productos,COALESCE(SUM(cantidad),0) unidades,COALESCE(SUM(cantidad*costo),0) inversion,
+      COALESCE(SUM(CASE WHEN cantidad<=0 THEN 1 ELSE 0 END),0) sin_stock,
+      COALESCE(SUM(CASE WHEN cantidad>0 AND cantidad<=stock_minimo THEN 1 ELSE 0 END),0) bajo FROM stock_productos WHERE activo=TRUE""")
+    resumen=cur.fetchone() or {}; con.close()
+    filas=""
+    for x in productos:
+        cant=int(x.get("cantidad") or 0); minv=int(x.get("stock_minimo") or 0)
+        estado = "<span style='background:#fee2e2;color:#991b1b;padding:5px 9px;border-radius:999px;font-weight:bold'>Sin stock</span>" if cant<=0 else ("<span style='background:#fef3c7;color:#92400e;padding:5px 9px;border-radius:999px;font-weight:bold'>Stock bajo</span>" if cant<=minv else "<span style='background:#dcfce7;color:#166534;padding:5px 9px;border-radius:999px;font-weight:bold'>OK</span>")
+        filas+=f"""<tr><td>{escape(str(x.get('codigo') or '-'))}</td><td><b>{escape(str(x.get('nombre') or '-'))}</b><br><small>{escape(str(x.get('marca') or ''))}</small></td><td>{escape(str(x.get('grupo') or '-'))}</td><td>{escape(str(x.get('categoria') or '-'))}</td><td>{escape(str(x.get('modelos_compatibles') or '-'))}</td><td>{cant}</td><td>{minv}</td><td>{estado}</td><td>{escape(str(x.get('ubicacion') or '-'))}</td><td>$ {float(x.get('costo') or 0):,.2f}</td><td>$ {float(x.get('precio_venta') or 0):,.2f}</td><td><a href='/stock/producto/{x["id"]}' style='font-weight:bold;color:#2563eb;margin-right:8px'>Ver</a><a href='/stock/movimiento/{x["id"]}' style='font-weight:bold;color:#16a34a'>Movimiento</a></td></tr>"""
+    return html_layout("Stock",card_html(f"""<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'><div><h2 style='margin:0'>📦 Stock</h2><p style='color:#64748b'>Repuestos, accesorios de venta y artículos/consumibles del taller.</p></div><div><a href='/stock/nuevo' style='background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>➕ Nuevo producto</a> <a href='/stock/movimientos' style='background:#475569;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>📜 Movimientos</a> <a href='/'>🏠 Inicio</a></div></div>
+    <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:16px 0'><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Productos</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("productos") or 0)}</div></div><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Unidades</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("unidades") or 0)}</div></div><div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Invertido</small><div style='font-size:24px;font-weight:900'>$ {float(resumen.get("inversion") or 0):,.2f}</div></div><div style='background:#fef3c7;padding:14px;border-radius:12px'><small>Stock bajo</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("bajo") or 0)}</div></div><div style='background:#fee2e2;padding:14px;border-radius:12px'><small>Sin stock</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("sin_stock") or 0)}</div></div></div>
+    <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px'><select name='grupo' style='padding:9px'><option value=''>Todos los grupos</option><option value='Repuesto' {'selected' if grupo=='Repuesto' else ''}>Repuestos</option><option value='Accesorio' {'selected' if grupo=='Accesorio' else ''}>Accesorios</option><option value='Herramienta / consumible' {'selected' if grupo=='Herramienta / consumible' else ''}>Herramientas / consumibles</option></select><input name='q' value='{escape(q)}' placeholder='Buscar código, producto, modelo, proveedor...' style='padding:9px;min-width:280px'><button style='padding:9px 14px'>Buscar</button></form>
+    <div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;min-width:1150px'><tr style='background:#eff6ff'><th>Código</th><th>Producto</th><th>Grupo</th><th>Categoría</th><th>Compatibilidad</th><th>Stock</th><th>Mín.</th><th>Estado</th><th>Ubicación</th><th>Costo</th><th>Venta</th><th></th></tr>{filas or "<tr><td colspan='12' style='padding:18px;text-align:center;color:#64748b'>No hay productos cargados.</td></tr>"}</table></div><style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>"""))
+
+@app.route("/stock/nuevo",methods=["GET","POST"])
+def stock_nuevo():
+    if not session.get("login"): return redirect("/login")
+    if request.method=="POST":
+        grupo=request.form.get("grupo","").strip(); nombre=request.form.get("nombre","").strip(); codigo=request.form.get("codigo","").strip(); categoria=request.form.get("categoria","").strip(); marca=request.form.get("marca","").strip(); compat=request.form.get("compatibilidad","").strip(); proveedor=request.form.get("proveedor","").strip(); ubicacion=request.form.get("ubicacion","").strip()
+        try:costo=float((request.form.get("costo") or "0").replace(",","."))
+        except:costo=0
+        try:precio=float((request.form.get("precio") or "0").replace(",","."))
+        except:precio=0
+        try:cantidad=max(0,int(request.form.get("cantidad") or 0))
+        except:cantidad=0
+        try:minimo=max(0,int(request.form.get("minimo") or 0))
+        except:minimo=0
+        if not nombre or grupo not in ["Repuesto","Accesorio","Herramienta / consumible"]: flash("Completá nombre y grupo correctamente.","error"); return redirect("/stock/nuevo")
+        con=db();cur=con.cursor()
+        if not codigo:
+            cur.execute("SELECT COALESCE(MAX(id),0)+1 n FROM stock_productos"); n=int(cur.fetchone()["n"] or 1); pref={"Repuesto":"REP","Accesorio":"ACC","Herramienta / consumible":"CON"}[grupo]; codigo=f"{pref}-{n:05d}"
+        try:
+            cur.execute("""INSERT INTO stock_productos(codigo,grupo,nombre,categoria,marca,modelos_compatibles,proveedor,costo,precio_venta,cantidad,stock_minimo,ubicacion) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",(codigo,grupo,nombre,categoria,marca,compat,proveedor,costo,precio,cantidad,minimo,ubicacion)); pid=cur.fetchone()["id"]
+            if cantidad>0: cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,observacion) VALUES(%s,'Alta inicial',%s,0,%s,%s,%s,'Carga inicial de stock')""",(pid,cantidad,cantidad,costo,proveedor))
+            con.commit()
+        except Exception:
+            con.rollback();con.close();flash("No se pudo guardar. Revisá que el código no esté repetido.","error");return redirect("/stock/nuevo")
+        con.close();flash(f"Producto {codigo} agregado correctamente.","success");return redirect(f"/stock/producto/{pid}")
+    return html_layout("Nuevo producto",card_html("""<h2 style='margin-top:0'>➕ Nuevo producto de stock</h2><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px'><div><label>Grupo *</label><br><select name='grupo' required style='width:100%;padding:10px'><option value=''>Elegir...</option><option>Repuesto</option><option>Accesorio</option><option>Herramienta / consumible</option></select></div><div><label>Código interno</label><br><input name='codigo' placeholder='Automático si queda vacío' style='width:100%;padding:10px'></div><div><label>Nombre *</label><br><input name='nombre' required style='width:100%;padding:10px'></div><div><label>Categoría</label><br><input name='categoria' placeholder='Pantalla, batería, cargador...' style='width:100%;padding:10px'></div><div><label>Marca</label><br><input name='marca' style='width:100%;padding:10px'></div><div><label>Proveedor</label><br><input name='proveedor' style='width:100%;padding:10px'></div><div><label>Costo unitario</label><br><input name='costo' value='0' style='width:100%;padding:10px'></div><div><label>Precio de venta</label><br><input name='precio' value='0' style='width:100%;padding:10px'></div><div><label>Cantidad inicial</label><br><input name='cantidad' type='number' min='0' value='0' style='width:100%;padding:10px'></div><div><label>Stock mínimo</label><br><input name='minimo' type='number' min='0' value='0' style='width:100%;padding:10px'></div><div><label>Ubicación física</label><br><input name='ubicacion' placeholder='Cajón A3 / Estante 2' style='width:100%;padding:10px'></div></div><div style='margin-top:12px'><label>Compatibilidad / modelos</label><br><textarea name='compatibilidad' rows='3' style='width:100%;padding:10px'></textarea></div><button style='margin-top:14px;background:#2563eb;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>Guardar producto</button> <a href='/stock'>Cancelar</a></form>"""))
+
+@app.route("/stock/producto/<int:pid>",methods=["GET","POST"])
+def stock_producto(pid):
+    if not session.get("login"):return redirect("/login")
+    con=db();cur=con.cursor();cur.execute("SELECT * FROM stock_productos WHERE id=%s",(pid,));p=cur.fetchone()
+    if not p:con.close();return redirect("/stock")
+    if request.method=="POST":
+        try:costo=float((request.form.get("costo") or "0").replace(",","."))
+        except:costo=float(p.get("costo") or 0)
+        try:precio=float((request.form.get("precio") or "0").replace(",","."))
+        except:precio=float(p.get("precio_venta") or 0)
+        try:minimo=max(0,int(request.form.get("minimo") or 0))
+        except:minimo=int(p.get("stock_minimo") or 0)
+        cur.execute("""UPDATE stock_productos SET nombre=%s,categoria=%s,marca=%s,modelos_compatibles=%s,proveedor=%s,costo=%s,precio_venta=%s,stock_minimo=%s,ubicacion=%s,fecha_actualizacion=NOW() WHERE id=%s""",(request.form.get("nombre","").strip(),request.form.get("categoria","").strip(),request.form.get("marca","").strip(),request.form.get("compatibilidad","").strip(),request.form.get("proveedor","").strip(),costo,precio,minimo,request.form.get("ubicacion","").strip(),pid));con.commit();con.close();flash("Producto actualizado correctamente.","success");return redirect(f"/stock/producto/{pid}")
+    cur.execute("SELECT * FROM stock_movimientos WHERE producto_id=%s ORDER BY id DESC LIMIT 20",(pid,));movs=cur.fetchall();con.close();filas="".join(f"<tr><td>{escape(str(m['fecha']))}</td><td>{escape(str(m['tipo']))}</td><td>{m['cantidad']}</td><td>{m.get('cantidad_anterior')}</td><td>{m.get('cantidad_nueva')}</td><td>{escape(str(m.get('referencia') or '-'))}</td></tr>" for m in movs)
+    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
+
+@app.route("/stock/movimiento/<int:pid>",methods=["GET","POST"])
+def stock_movimiento(pid):
+    if not session.get("login"):return redirect("/login")
+    con=db();cur=con.cursor();cur.execute("SELECT * FROM stock_productos WHERE id=%s",(pid,));p=cur.fetchone()
+    if not p:con.close();return redirect("/stock")
+    if request.method=="POST":
+        tipo=request.form.get("tipo","").strip();
+        try:cantidad=max(1,int(request.form.get("cantidad") or 1))
+        except:cantidad=1
+        anterior=int(p.get("cantidad") or 0)
+        if tipo in ["Entrada compra","Devolución","Ajuste +"]: nueva=anterior+cantidad; mov=cantidad
+        elif tipo in ["Salida manual","Merma / rotura","Ajuste -"]:
+            if cantidad>anterior:con.close();flash("No hay suficiente stock para esa salida.","error");return redirect(f"/stock/movimiento/{pid}")
+            nueva=anterior-cantidad;mov=-cantidad
+        else:con.close();flash("Elegí un tipo válido.","error");return redirect(f"/stock/movimiento/{pid}")
+        try:costo=float((request.form.get("costo") or p.get("costo") or 0).replace(",",".")) if isinstance(request.form.get("costo") or '',str) else float(p.get("costo") or 0)
+        except:costo=float(p.get("costo") or 0)
+        proveedor=request.form.get("proveedor","").strip() or p.get("proveedor");ref=request.form.get("referencia","").strip();obs=request.form.get("observacion","").strip()
+        cur.execute("UPDATE stock_productos SET cantidad=%s,costo=%s,proveedor=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,costo,proveedor,pid));cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",(pid,tipo,mov,anterior,nueva,costo,proveedor,ref,obs));con.commit();con.close();flash(f"Movimiento registrado. Stock: {anterior} → {nueva}.","success");return redirect(f"/stock/producto/{pid}")
+    con.close();return html_layout("Movimiento",card_html(f"""<h2>📦 Movimiento — {escape(str(p['nombre']))}</h2><p>Stock actual: <b>{int(p.get('cantidad') or 0)}</b></p><form method='post'><select name='tipo' required><option>Entrada compra</option><option>Devolución</option><option>Ajuste +</option><option>Salida manual</option><option>Merma / rotura</option><option>Ajuste -</option></select><br><br><input name='cantidad' type='number' min='1' value='1' placeholder='Cantidad'><br><br><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo unitario'><br><br><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><br><br><input name='referencia' placeholder='Referencia'><br><br><textarea name='observacion' placeholder='Observación'></textarea><br><button>Guardar movimiento</button> <a href='/stock/producto/{pid}'>Cancelar</a></form>"""))
+
+@app.get("/stock/movimientos")
+def stock_movimientos():
+    if not session.get("login"):return redirect("/login")
+    con=db();cur=con.cursor();cur.execute("""SELECT m.*,p.codigo,p.nombre FROM stock_movimientos m JOIN stock_productos p ON p.id=m.producto_id ORDER BY m.id DESC LIMIT 300""");ms=cur.fetchall();con.close();filas="".join(f"<tr><td>{escape(str(m['fecha']))}</td><td>{escape(str(m['codigo']))}</td><td>{escape(str(m['nombre']))}</td><td>{escape(str(m['tipo']))}</td><td>{m['cantidad']}</td><td>{m.get('cantidad_anterior')}</td><td>{m.get('cantidad_nueva')}</td><td>{escape(str(m.get('referencia') or '-'))}</td></tr>" for m in ms);return html_layout("Movimientos",card_html(f"""<h2>📜 Movimientos de stock</h2><p><a href='/stock'>← Volver a Stock</a></p><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Código</th><th>Producto</th><th>Tipo</th><th>Movimiento</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="8">Sin movimientos.</td></tr>'}</table></div>"""))
 
 
 @app.get("/facturacion")
@@ -2915,7 +3026,8 @@ def solicitudes_ingreso():
     cur.execute("""
       SELECT id, token, estado, nombre, telefono, tipo_equipo, marca, modelo, fecha_creacion
       FROM solicitudes_ingreso
-      ORDER BY CASE WHEN estado='Pendiente' THEN 0 ELSE 1 END, id DESC
+      WHERE estado <> 'Convertida'
+      ORDER BY CASE WHEN estado='Completada' THEN 0 ELSE 1 END, id DESC
     """)
     filas = cur.fetchall(); con.close()
 
@@ -3042,6 +3154,7 @@ def qr_autoregistro(token):
 def revisar_solicitud(sid):
     if not session.get("login"):
         return redirect("/login")
+
     con = db(); cur = con.cursor()
     cur.execute("SELECT * FROM solicitudes_ingreso WHERE id=%s", (sid,))
     s = cur.fetchone()
@@ -3049,57 +3162,179 @@ def revisar_solicitud(sid):
         con.close()
         return html_layout("No encontrada", card_html("<h2>Solicitud no encontrada</h2>"))
 
+    # Una vez convertida, ya no pertenece a Autoregistro.
+    if s.get("estado") == "Convertida":
+        con.close()
+        flash("Esta solicitud ya fue convertida en orden y salió de Autoregistro.", "success")
+        return redirect("/ver_ordenes")
+
     if request.method == "POST":
-        telefono = str(s.get("telefono") or "").strip()
-        email = str(s.get("email") or "").strip()
+        accion = request.form.get("accion", "guardar")
+
+        # El técnico puede corregir/completar todos los datos antes de crear la orden.
+        datos = {
+            "nombre": request.form.get("nombre", "").strip(),
+            "telefono": request.form.get("telefono", "").strip(),
+            "email": request.form.get("email", "").strip(),
+            "cedula": request.form.get("cedula", "").strip(),
+            "tipo_equipo": request.form.get("tipo_equipo", "").strip(),
+            "marca": request.form.get("marca", "").strip(),
+            "modelo": request.form.get("modelo", "").strip(),
+            "numero_serie": request.form.get("numero_serie", "").strip(),
+            "imei": request.form.get("imei", "").strip(),
+            "falla_cliente": request.form.get("falla_cliente", "").strip(),
+            "accesorios": request.form.get("accesorios", "").strip(),
+            "bloqueo_tipo": request.form.get("bloqueo_tipo", "Sin bloqueo").strip(),
+            "clave_bloqueo": request.form.get("clave_bloqueo", "").strip(),
+            "patron_bloqueo": request.form.get("patron_bloqueo", "").strip(),
+        }
+
+        cur.execute("""
+          UPDATE solicitudes_ingreso SET
+            nombre=%s, telefono=%s, email=%s, cedula=%s,
+            tipo_equipo=%s, marca=%s, modelo=%s, numero_serie=%s, imei=%s,
+            falla_cliente=%s, accesorios=%s, bloqueo_tipo=%s, clave_bloqueo=%s,
+            patron_bloqueo=%s
+          WHERE id=%s
+        """, (
+            datos["nombre"], datos["telefono"], datos["email"], datos["cedula"],
+            datos["tipo_equipo"], datos["marca"], datos["modelo"], datos["numero_serie"], datos["imei"],
+            datos["falla_cliente"], datos["accesorios"], datos["bloqueo_tipo"],
+            datos["clave_bloqueo"], datos["patron_bloqueo"], sid
+        ))
+
+        if accion == "guardar":
+            con.commit(); con.close()
+            flash("Datos de la solicitud actualizados correctamente.", "success")
+            return redirect(f"/revisar_solicitud/{sid}")
+
+        if accion != "crear":
+            con.rollback(); con.close()
+            return redirect(f"/revisar_solicitud/{sid}")
+
+        if not datos["nombre"] or not datos["telefono"] or not datos["tipo_equipo"] or not datos["falla_cliente"]:
+            con.rollback(); con.close()
+            flash("Antes de crear la orden completá al menos nombre, teléfono, tipo de equipo y falla.", "error")
+            return redirect(f"/revisar_solicitud/{sid}")
+
         cliente_id = None
-        if telefono:
-            cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1", (telefono,))
-            r=cur.fetchone(); cliente_id = r["id"] if r else None
-        if not cliente_id and email:
-            cur.execute("SELECT id FROM clientes WHERE email=%s LIMIT 1", (email,))
-            r=cur.fetchone(); cliente_id = r["id"] if r else None
+        if datos["telefono"]:
+            cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1", (datos["telefono"],))
+            r = cur.fetchone()
+            cliente_id = r["id"] if r else None
+        if not cliente_id and datos["email"]:
+            cur.execute("SELECT id FROM clientes WHERE email=%s LIMIT 1", (datos["email"],))
+            r = cur.fetchone()
+            cliente_id = r["id"] if r else None
+
         if cliente_id:
-            cur.execute("""UPDATE clientes SET nombre=%s,telefono=%s,email=%s,cedula=%s,acepta_promociones=%s WHERE id=%s""",
-                        (s.get("nombre"), telefono, email, s.get("cedula"), bool(s.get("acepta_promociones")), cliente_id))
+            cur.execute("""
+              UPDATE clientes SET nombre=%s,telefono=%s,email=%s,cedula=%s,acepta_promociones=%s
+              WHERE id=%s
+            """, (
+                datos["nombre"], datos["telefono"], datos["email"], datos["cedula"],
+                bool(s.get("acepta_promociones")), cliente_id
+            ))
         else:
-            cur.execute("""INSERT INTO clientes(nombre,telefono,email,cedula,acepta_promociones) VALUES(%s,%s,%s,%s,%s) RETURNING id""",
-                        (s.get("nombre"), telefono, email, s.get("cedula"), bool(s.get("acepta_promociones"))))
-            cliente_id=cur.fetchone()["id"]
+            cur.execute("""
+              INSERT INTO clientes(nombre,telefono,email,cedula,acepta_promociones)
+              VALUES(%s,%s,%s,%s,%s) RETURNING id
+            """, (
+                datos["nombre"], datos["telefono"], datos["email"], datos["cedula"],
+                bool(s.get("acepta_promociones"))
+            ))
+            cliente_id = cur.fetchone()["id"]
 
         token_aprobacion = secrets.token_urlsafe(32)
         cur.execute("""
-          INSERT INTO ordenes(numero_orden,cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,
-          estado_general,falla_cliente,diagnostico_tecnico,fecha_ingreso,estado,presupuesto,observaciones,
-          token_aprobacion,presupuesto_aprobado,presupuesto_rechazado,accesorios,bloqueo_tipo,clave_bloqueo,patron_bloqueo)
+          INSERT INTO ordenes(
+            numero_orden,cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,
+            estado_general,falla_cliente,diagnostico_tecnico,fecha_ingreso,estado,presupuesto,observaciones,
+            token_aprobacion,presupuesto_aprobado,presupuesto_rechazado,accesorios,bloqueo_tipo,clave_bloqueo,patron_bloqueo
+          )
           VALUES('',%s,%s,%s,%s,%s,%s,'',%s,'',CURRENT_DATE,'Recibido en taller',0,'',%s,FALSE,FALSE,%s,%s,%s,%s)
           RETURNING id
-        """, (cliente_id,s.get("tipo_equipo"),s.get("marca"),s.get("modelo"),s.get("numero_serie"),
-              s.get("imei"),s.get("falla_cliente"),token_aprobacion,s.get("accesorios"),
-              s.get("bloqueo_tipo"),s.get("clave_bloqueo"),s.get("patron_bloqueo")))
-        oid=cur.fetchone()["id"]
-        numero=f"NR-{datetime.datetime.now().year}-{oid:04d}"
-        cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s",(numero,oid))
-        cur.execute("UPDATE solicitudes_ingreso SET estado='Convertida', fecha_revision=NOW() WHERE id=%s",(sid,))
+        """, (
+            cliente_id, datos["tipo_equipo"], datos["marca"], datos["modelo"],
+            datos["numero_serie"], datos["imei"], datos["falla_cliente"],
+            token_aprobacion, datos["accesorios"], datos["bloqueo_tipo"],
+            datos["clave_bloqueo"], datos["patron_bloqueo"]
+        ))
+
+        oid = cur.fetchone()["id"]
+        numero = f"NR-{datetime.datetime.now().year}-{oid:04d}"
+        cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s", (numero, oid))
+        cur.execute("UPDATE solicitudes_ingreso SET estado='Convertida', fecha_revision=NOW() WHERE id=%s", (sid,))
         con.commit(); con.close()
-        return redirect(f"/buscar?q={numero}")
+
+        flash(f"Orden {numero} creada correctamente. La solicitud salió de Autoregistro.", "success")
+        return redirect(f"/editar?numero={quote(numero)}")
 
     con.close()
-    def v(k): return escape(str(s.get(k) or "-"))
-    promo = "Sí" if s.get("acepta_promociones") else "No"
+
+    def e(campo):
+        return escape(str(s.get(campo) or ""))
+
+    bloqueo_actual = str(s.get("bloqueo_tipo") or "Sin bloqueo")
+    opciones_bloqueo = "".join(
+        f"<option value='{x}' {'selected' if bloqueo_actual==x else ''}>{x}</option>"
+        for x in ["Sin bloqueo", "PIN / clave", "Patrón"]
+    )
+
     return html_layout("Revisar solicitud", card_html(f"""
-      <h2 style="margin-top:0">Revisar solicitud #{sid}</h2>
-      <p><strong>Estado:</strong> {v('estado')}</p>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px">
-        <div><b>Cliente</b><br>{v('nombre')}<br>{v('telefono')}<br>{v('email')}<br>CI: {v('cedula')}</div>
-        <div><b>Equipo</b><br>{v('tipo_equipo')} {v('marca')} {v('modelo')}<br>Serie: {v('numero_serie')}<br>IMEI: {v('imei')}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <h2 style="margin:0">✏️ Revisar y completar solicitud #{sid}</h2>
+          <p style="color:#64748b;margin:5px 0 0">Corregí o completá lo que el cliente no supo ingresar antes de crear la orden.</p>
+        </div>
+        <a href="/solicitudes_ingreso" style="font-weight:bold;color:#2563eb">← Autoregistro</a>
       </div>
-      <p><b>Falla:</b><br>{v('falla_cliente')}</p>
-      <p><b>Accesorios:</b> {v('accesorios')}</p>
-      <p><b>Bloqueo:</b> {v('bloqueo_tipo')} | Clave: {v('clave_bloqueo')} | Patrón: {v('patron_bloqueo')}</p>
-      <p><b>Acepta promociones:</b> {promo}</p>
-      {"<form method='post'><button style='background:#16a34a;color:white;border:0;padding:12px 18px;border-radius:12px;font-weight:bold'>✅ Confirmar y crear orden</button></form>" if s.get("estado")=="Completada" else ""}
-      <p style="margin-top:16px"><a href="/solicitudes_ingreso">Volver</a></p>
+
+      <form method="post" style="margin-top:18px">
+        <div style="background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:14px;margin-bottom:14px">
+          <h3 style="margin-top:0">👤 Cliente</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px">
+            <div><label>Nombre *</label><input name="nombre" required value="{e('nombre')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Teléfono *</label><input name="telefono" required value="{e('telefono')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Email</label><input name="email" type="email" value="{e('email')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Cédula</label><input name="cedula" value="{e('cedula')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+          </div>
+        </div>
+
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:14px;margin-bottom:14px">
+          <h3 style="margin-top:0">📱 Equipo</h3>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px">
+            <div><label>Tipo *</label><input name="tipo_equipo" required value="{e('tipo_equipo')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Marca</label><input name="marca" value="{e('marca')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Modelo</label><input name="modelo" value="{e('modelo')}" placeholder="Podés completarlo vos" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>N.º serie</label><input name="numero_serie" value="{e('numero_serie')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>IMEI</label><input name="imei" value="{e('imei')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+          </div>
+          <label style="display:block;margin-top:10px">Falla declarada *</label>
+          <textarea name="falla_cliente" required rows="3" style="width:100%;padding:10px;box-sizing:border-box">{e('falla_cliente')}</textarea>
+          <label style="display:block;margin-top:10px">Accesorios entregados</label>
+          <input name="accesorios" value="{e('accesorios')}" style="width:100%;padding:10px;box-sizing:border-box">
+        </div>
+
+        <details style="padding:14px;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:14px">
+          <summary style="font-weight:bold;cursor:pointer">🔐 Datos de desbloqueo</summary>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-top:12px">
+            <div><label>Tipo</label><select name="bloqueo_tipo" style="width:100%;padding:10px">{opciones_bloqueo}</select></div>
+            <div><label>PIN / clave</label><input name="clave_bloqueo" value="{e('clave_bloqueo')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+            <div><label>Patrón</label><input name="patron_bloqueo" value="{e('patron_bloqueo')}" style="width:100%;padding:10px;box-sizing:border-box"></div>
+          </div>
+        </details>
+
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;padding:12px;border-radius:12px;margin-bottom:14px">
+          <b>Promociones WhatsApp:</b> {"Aceptadas por el cliente" if s.get("acepta_promociones") else "No aceptadas"}
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button name="accion" value="guardar" style="background:#475569;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:bold">💾 Guardar cambios</button>
+          <button name="accion" value="crear" style="background:#16a34a;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:bold">✅ Confirmar y crear orden</button>
+          <a href="/solicitudes_ingreso" style="padding:12px">Cancelar</a>
+        </div>
+      </form>
     """))
 
 
