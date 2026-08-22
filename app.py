@@ -632,7 +632,7 @@ def venta_comprobante(vid):
     base=BASE_URL or request.url_root.rstrip("/"); pub=f"{base}/venta_publica/{v['token_publico']}"
     wa="https://wa.me/?text="+quote(f"NR Tech - {v['comprobante_numero']}\nTotal: $ {float(v['total']):,.2f}\n{pub}")
     return html_layout("Venta",card_html(f"""<h2>✅ Venta registrada / factura emitida</h2><p><b>{v['comprobante_numero']}</b></p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2>
-    <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 WhatsApp</a><a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a></div>
+    <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 WhatsApp</a><a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a><a href='/ventas' style='background:#475569;color:white;padding:11px;text-decoration:none;border-radius:9px'>← Volver a ventas</a><a href='/' style='background:#0f172a;color:white;padding:11px;text-decoration:none;border-radius:9px'>🏠 Inicio</a></div>
     <p style='color:#64748b'>Esta factura ya quedó emitida y no se duplica al volver a abrirla.</p>"""))
 
 @app.get("/venta_publica/<token>")
@@ -697,6 +697,10 @@ def venta_publica(token):
       <div style='display:grid;grid-template-columns:1fr 150px;gap:16px;align-items:center;margin-top:18px'>
         <div style='font-size:12px;color:#64748b'>Factura y respaldo de garantía de NR Tech. Guardá este documento para futuras consultas.</div>
         <div style='text-align:center'><img src='/qr_venta/{token}.png' style='width:130px;height:130px'><div style='font-size:11px'>Verificar factura</div></div>
+      </div>
+      <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:18px'>
+        <a href='/' style='background:#2563eb;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>🏠 Inicio</a>
+        <a href='/ventas' style='background:#475569;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>← Volver a ventas</a>
       </div>
     """))
 
