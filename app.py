@@ -567,11 +567,11 @@ def finanzas():
     con = db(); cur = con.cursor()
     cur.execute("""
         SELECT
-            COALESCE(SUM(presupuesto),0) AS facturado,
+            COALESCE(SUM(COALESCE(comprobante_total,presupuesto)),0) AS facturado,
             COALESCE(SUM(cobrado),0) AS cobrado,
             COALESCE(SUM(costo_repuestos),0) AS costos,
-            COALESCE(SUM(GREATEST(presupuesto-cobrado,0)),0) AS pendiente,
-            COALESCE(SUM(presupuesto-costo_repuestos),0) AS margen,
+            COALESCE(SUM(GREATEST(COALESCE(comprobante_total,presupuesto)-cobrado,0)),0) AS pendiente,
+            COALESCE(SUM(COALESCE(comprobante_total,presupuesto)-costo_repuestos),0) AS margen,
             COUNT(*) AS trabajos
         FROM ordenes
         WHERE fecha_entregado IS NOT NULL
@@ -581,7 +581,7 @@ def finanzas():
     mes_data = cur.fetchone() or {}
 
     cur.execute("""
-        SELECT COALESCE(SUM(presupuesto),0) AS facturado_anual
+        SELECT COALESCE(SUM(COALESCE(comprobante_total,presupuesto)),0) AS facturado_anual
         FROM ordenes
         WHERE fecha_entregado IS NOT NULL
           AND EXTRACT(YEAR FROM fecha_entregado)=%s
@@ -590,9 +590,9 @@ def finanzas():
 
     cur.execute("""
         SELECT EXTRACT(MONTH FROM fecha_entregado)::int AS mes,
-               COALESCE(SUM(presupuesto),0) AS facturado,
+               COALESCE(SUM(COALESCE(comprobante_total,presupuesto)),0) AS facturado,
                COALESCE(SUM(costo_repuestos),0) AS costos,
-               COALESCE(SUM(presupuesto-costo_repuestos),0) AS margen,
+               COALESCE(SUM(COALESCE(comprobante_total,presupuesto)-costo_repuestos),0) AS margen,
                COUNT(*) AS trabajos
         FROM ordenes
         WHERE fecha_entregado IS NOT NULL
@@ -619,7 +619,7 @@ def finanzas():
 
     contenido = f"""
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
-      <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Solo cuenta trabajos marcados como <strong>Entregados</strong>; los presupuestos pendientes no suman.</p></div>
+      <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Solo cuenta trabajos <strong>Entregados</strong>. Si existe comprobante, usa el <strong>total final del comprobante</strong>; las órdenes antiguas sin comprobante usan el presupuesto como respaldo.</p></div>
       <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;">🏠 Inicio</a>
     </div>
     <form method="get" style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
@@ -1918,7 +1918,8 @@ def comprobante():
         token, comp = _asegurar_token_y_comprobante(cur, o)
         cur.execute("UPDATE ordenes SET comprobante_forma_pago=%s, comprobante_total=%s, forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE numero_orden=%s", (forma,total,forma,numero))
         con.commit(); con.close()
-        return redirect(f"/imprimir_comprobante?numero={quote(numero)}&generado=1")
+        flash(f"Comprobante de {numero} generado y guardado correctamente por $ {total:,.2f}.", "success")
+        return redirect(f"/comprobante?numero={quote(numero)}")
     total = o['comprobante_total'] if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
     forma = o.get('comprobante_forma_pago') or o.get('forma_pago') or ''
     con.close()
@@ -1934,8 +1935,15 @@ def comprobante():
         <select name='forma_pago' style='padding:10px;width:240px;margin:6px 0 16px;border:1px solid #d1d5db;border-radius:10px'>
           {''.join(f"<option value='{x}' {'selected' if forma==x else ''}>{x}</option>" for x in ['Efectivo','Transferencia','Mercado Pago','Débito','Crédito','Otro'])}
         </select><br>
-        <button style='background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800;cursor:pointer'>Generar e imprimir</button>
-        <a href='/ver_ordenes' style='margin-left:12px'>Cancelar</a>
+        <button style='background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800;cursor:pointer'>💾 Generar / guardar comprobante</button>
+      </form>
+      <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:14px'>
+        <a href='/imprimir_comprobante?numero={quote(numero)}' style='background:#334155;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>🖨️ Ver / imprimir</a>
+        {f"<a href='/documento/{o.get('comprobante_token')}' target='_blank' style='background:#2563eb;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>📄 Ver documento público</a>" if o.get('comprobante_token') else ""}
+        <a href='/entrega?numero={quote(numero)}' style='background:#16a34a;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>📲 Enviar / entrega</a>
+        <a href='/ver_ordenes' style='padding:11px 5px'>Volver</a>
+      </div>
+      <form style='display:none'>
       </form>
       <p style='font-size:12px;color:#64748b;margin-top:18px'>Documento interno de la operación. La identificación fiscal usa los datos configurados de NR Tech.</p>
     """
