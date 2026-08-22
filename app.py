@@ -557,6 +557,7 @@ def home():
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
       <a href="/venta" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛒 Nueva venta</h3><p style="margin:0;color:#6b7280;">Accesorios y ventas de mostrador.</p></div></a>
       <a href="/ventas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📚 Ventas</h3><p style="margin:0;color:#6b7280;">Historial de ventas y facturas emitidas.</p></div></a>
+      <a href="/facturacion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #c7d2fe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📑 Facturación</h3><p style="margin:0;color:#6b7280;">Archivo mensual de todas las facturas.</p></div></a>
       <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
@@ -992,6 +993,70 @@ def eliminar_venta():
     """))
 
 
+
+@app.get("/facturacion")
+def facturacion():
+    if not session.get("login"):
+        return redirect("/login")
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.args.get("anio",hoy.year)); mes=int(request.args.get("mes",hoy.month))
+    except Exception:
+        anio,mes=hoy.year,hoy.month
+    q=request.args.get("q","").strip()
+
+    con=db(); cur=con.cursor()
+    cur.execute("""
+      SELECT o.comprobante_numero AS factura,o.fecha_comprobante AS fecha,c.nombre,
+             'Reparación' AS origen,o.numero_orden AS referencia,
+             COALESCE(o.comprobante_total,o.presupuesto,0) AS total,
+             o.numero_orden AS orden_id,NULL::integer AS venta_id
+      FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+      WHERE o.comprobante_numero IS NOT NULL
+        AND EXTRACT(YEAR FROM o.fecha_comprobante)=%s AND EXTRACT(MONTH FROM o.fecha_comprobante)=%s
+        AND (%s='' OR o.comprobante_numero ILIKE %s OR o.numero_orden ILIKE %s OR c.nombre ILIKE %s)
+      UNION ALL
+      SELECT v.comprobante_numero,v.fecha,COALESCE(c.nombre,'Consumidor final'),
+             'Venta',v.numero_venta,v.total,NULL::text,v.id
+      FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id
+      WHERE v.comprobante_numero IS NOT NULL
+        AND EXTRACT(YEAR FROM v.fecha)=%s AND EXTRACT(MONTH FROM v.fecha)=%s
+        AND (%s='' OR v.comprobante_numero ILIKE %s OR v.numero_venta ILIKE %s OR COALESCE(c.nombre,'') ILIKE %s)
+      ORDER BY fecha DESC
+    """,(anio,mes,q,f"%{q}%",f"%{q}%",f"%{q}%",anio,mes,q,f"%{q}%",f"%{q}%",f"%{q}%"))
+    docs=cur.fetchall(); con.close()
+
+    filas=""
+    for d in docs:
+        if d["origen"]=="Venta":
+            acciones=f"<a href='/venta_comprobante/{d['venta_id']}' style='font-weight:bold;color:#2563eb'>Ver / enviar</a>"
+        else:
+            acciones=f"<a href='/imprimir_comprobante?numero={quote(str(d['orden_id']))}' target='_blank' style='font-weight:bold;color:#2563eb'>Ver / imprimir</a> · <a href='/entrega?numero={quote(str(d['orden_id']))}' style='font-weight:bold;color:#16a34a'>Enviar</a>"
+        filas+=f"""<tr><td>{escape(str(d['fecha'].strftime('%d/%m/%Y %H:%M') if hasattr(d['fecha'],'strftime') else d['fecha']))}</td>
+        <td><b>{escape(str(d['factura']))}</b></td><td>{escape(str(d['origen']))}</td><td>{escape(str(d['referencia']))}</td>
+        <td>{escape(str(d.get('nombre') or '-'))}</td><td>$ {float(d.get('total') or 0):,.2f}</td><td>{acciones}</td></tr>"""
+
+    nombres=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    opts_m="".join(f"<option value='{i}' {'selected' if i==mes else ''}>{nombres[i-1]}</option>" for i in range(1,13))
+    opts_a="".join(f"<option value='{y}' {'selected' if y==anio else ''}>{y}</option>" for y in range(hoy.year-3,hoy.year+2))
+    return html_layout("Facturación",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>📑 Facturación</h2><p style='color:#64748b'>Archivo mensual de facturas emitidas de reparaciones y ventas.</p></div>
+        <a href='/' style='font-weight:bold;color:#2563eb'>🏠 Inicio</a>
+      </div>
+      <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;margin:16px 0'>
+        <select name='mes' style='padding:9px'>{opts_m}</select><select name='anio' style='padding:9px'>{opts_a}</select>
+        <input name='q' value='{escape(q)}' placeholder='Factura, cliente, orden o venta' style='padding:9px;min-width:240px'>
+        <button style='padding:9px 14px'>Buscar</button>
+      </form>
+      <div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse'>
+      <tr style='background:#eff6ff'><th>Fecha</th><th>Factura</th><th>Origen</th><th>Referencia</th><th>Cliente</th><th>Total</th><th></th></tr>
+      {filas or "<tr><td colspan='7' style='padding:18px;text-align:center;color:#64748b'>No hay facturas emitidas en este período.</td></tr>"}
+      </table></div>
+      <style>table td,table th{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}}</style>
+    """))
+
+
 @app.get("/finanzas")
 def finanzas():
     if not session.get("login"):
@@ -1055,8 +1120,22 @@ def finanzas():
     mes_data["cobrado"]=float(mes_data.get("cobrado") or 0)+float(vm.get("total") or 0)
     mes_data["costos"]=float(mes_data.get("costos") or 0)+float(vm.get("costos") or 0)
     mes_data["margen"]=float(mes_data.get("margen") or 0)+float(vm.get("total") or 0)-float(vm.get("costos") or 0)
-    mes_data["trabajos"]=int(mes_data.get("trabajos") or 0)+int(vm.get("cantidad") or 0)
+    reparaciones_mes = int(mes_data.get("trabajos") or 0)
+    ventas_mes_cantidad = int(vm.get("cantidad") or 0)
     anual += va
+    # Ventas por mes para que el resumen anual separe reparaciones de ventas.
+    con2=db(); cur2=con2.cursor()
+    cur2.execute("""
+        SELECT EXTRACT(MONTH FROM fecha)::int AS mes,
+               COALESCE(SUM(total),0) AS facturado,
+               COALESCE(SUM(costo_total),0) AS costos,
+               COUNT(*) AS ventas
+        FROM ventas
+        WHERE EXTRACT(YEAR FROM fecha)=%s
+        GROUP BY 1 ORDER BY 1
+    """,(anio,))
+    ventas_por_mes={r["mes"]:r for r in cur2.fetchall()}
+    con2.close()
 
     def dinero(v):
         try: return f"${float(v or 0):,.0f}".replace(",", ".")
@@ -1071,11 +1150,15 @@ def finanzas():
     filas = ''
     for i in range(1,13):
         r = por_mes.get(i, {})
-        filas += f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{nombres[i-1]}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('facturado',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('costos',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(r.get('margen',0))}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(r.get('trabajos',0) or 0)}</td></tr>"
+        v = ventas_por_mes.get(i, {})
+        fact = float(r.get('facturado',0) or 0)+float(v.get('facturado',0) or 0)
+        costos = float(r.get('costos',0) or 0)+float(v.get('costos',0) or 0)
+        margen = fact-costos
+        filas += f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{nombres[i-1]}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(fact)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(costos)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(margen)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(r.get('trabajos',0) or 0)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(v.get('ventas',0) or 0)}</td></tr>"
 
     contenido = f"""
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
-      <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Solo cuenta trabajos <strong>Entregados</strong>. Si existe comprobante, usa el <strong>total final del comprobante</strong>; las órdenes antiguas sin comprobante usan el presupuesto como respaldo.</p></div>
+      <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Resumen del período: reparaciones entregadas y ventas directas se muestran por separado, pero ambas integran la facturación total.</p></div>
       <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;">🏠 Inicio</a>
     </div>
     <form method="get" style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
@@ -1095,7 +1178,8 @@ def finanzas():
         </div>
       </a>
       <div style="background:white;border:1px solid #c7d2fe;border-radius:14px;padding:15px;"><small>Ganancia estimada</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('margen'))}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>Trabajos entregados</small><div style="font-size:24px;font-weight:800;">{int(mes_data.get('trabajos') or 0)}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>🔧 Reparaciones entregadas</small><div style="font-size:24px;font-weight:800;">{reparaciones_mes}</div></div>
+      <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>🛒 Ventas realizadas</small><div style="font-size:24px;font-weight:800;">{ventas_mes_cantidad}</div></div>
     </div>
 
     <div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:18px;margin-bottom:18px;">
@@ -1112,7 +1196,7 @@ def finanzas():
 
     <div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;overflow-x:auto;">
       <h3 style="margin-top:0;">Resumen mes a mes — {anio}</h3>
-      <table style="width:100%;border-collapse:collapse;min-width:620px;"><tr style="background:#eff6ff;text-align:left;"><th style="padding:10px">Mes</th><th style="padding:10px">Facturado</th><th style="padding:10px">Costos</th><th style="padding:10px">Ganancia est.</th><th style="padding:10px">Trabajos</th></tr>{filas}</table>
+      <table style="width:100%;border-collapse:collapse;min-width:620px;"><tr style="background:#eff6ff;text-align:left;"><th style="padding:10px">Mes</th><th style="padding:10px">Facturado</th><th style="padding:10px">Costos</th><th style="padding:10px">Ganancia est.</th><th style="padding:10px">Reparaciones</th><th style="padding:10px">Ventas</th></tr>{filas}</table>
     </div>
     """
     return html_layout("Finanzas", contenido)
