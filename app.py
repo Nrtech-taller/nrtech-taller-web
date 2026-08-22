@@ -945,7 +945,8 @@ def ver_ordenes():
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
             <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold; margin-right:10px;">Etiqueta</a>
             <a href="/entrega?numero={o['numero_orden']}" style="color:#b45309; font-weight:bold;">Entrega</a>
-            <a href="/comprobante?numero={o['numero_orden']}" style="color:#059669; font-weight:bold; margin-left:10px;">Comprobante</a>
+            <a href="/comprobante?numero={o['numero_orden']}" style="color:#059669; font-weight:bold; margin-left:10px;">Comprobante</a> 
+            <a href="/eliminar_orden?numero={o['numero_orden']}" style="color:#dc2626; font-weight:bold; margin-left:10px;">Eliminar</a>
           </td>
         </tr>
         """
@@ -1601,6 +1602,7 @@ def ver_cliente(id):
     <p><strong>Dirección:</strong> {cliente['direccion'] or '-'}</p>
     <p><strong>Cédula:</strong> {cliente['cedula'] or '-'}</p>
     <p><strong>Notas:</strong> {cliente['notas'] or '-'}</p>
+    <p><a href="/eliminar_cliente?id={id}" style="display:inline-block;background:#fee2e2;color:#b91c1c;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:bold;">🗑️ Eliminar cliente</a></p>
 
     <h3 style="margin-top:24px;">📢 Comunicaciones</h3>
     <form method="post" action="/cliente/{id}/promociones" style="background:#f8fafc;padding:12px;border-radius:10px;margin-bottom:18px;">
@@ -1641,6 +1643,91 @@ def ver_cliente(id):
 
     return html_layout("Ficha cliente", card_html(html))
 
+
+
+
+@app.route("/eliminar_orden", methods=["GET", "POST"])
+def eliminar_orden():
+    if not session.get("login"):
+        return redirect("/login")
+    numero=request.args.get("numero","").strip() if request.method=="GET" else request.form.get("numero","").strip()
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT o.numero_orden,o.tipo_equipo,o.marca,o.modelo,c.nombre
+                   FROM ordenes o JOIN clientes c ON o.cliente_id=c.id
+                   WHERE o.numero_orden=%s""",(numero,))
+    x=cur.fetchone()
+    if not x:
+        con.close()
+        return html_layout("No encontrada",card_html("<h2>Orden no encontrada</h2>"))
+    if request.method=="POST":
+        confirmar=request.form.get("confirmar","")
+        if confirmar=="ELIMINAR":
+            cur.execute("DELETE FROM ordenes WHERE numero_orden=%s",(numero,))
+            con.commit(); con.close()
+            return redirect("/ver_ordenes")
+        con.close()
+        return html_layout("Confirmación",card_html("<h2>No se eliminó la orden</h2><p>Debés escribir ELIMINAR exactamente.</p>"))
+    con.close()
+    equipo=" ".join([str(x.get("tipo_equipo") or ""),str(x.get("marca") or ""),str(x.get("modelo") or "")]).strip()
+    return html_layout("Eliminar orden",card_html(f"""
+      <h2 style='color:#b91c1c;margin-top:0'>🗑️ Eliminar orden</h2>
+      <p>Vas a eliminar permanentemente:</p>
+      <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px'>
+        <b>{escape(str(x['numero_orden']))}</b><br>
+        Cliente: {escape(str(x.get('nombre') or '-'))}<br>
+        Equipo: {escape(equipo)}
+      </div>
+      <p><b>Esto también deja de contar esta orden en los cálculos del sistema.</b></p>
+      <form method='post'>
+        <input type='hidden' name='numero' value='{escape(numero)}'>
+        <label>Escribí <b>ELIMINAR</b> para confirmar:</label>
+        <input name='confirmar' autocomplete='off' style='width:100%;max-width:300px;padding:10px;margin:8px 0;border:1px solid #d1d5db;border-radius:9px'>
+        <br><button style='background:#dc2626;color:white;border:0;padding:11px 16px;border-radius:10px;font-weight:bold'>Eliminar definitivamente</button>
+        <a href='/ver_ordenes' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
+
+
+@app.route("/eliminar_cliente", methods=["GET","POST"])
+def eliminar_cliente():
+    if not session.get("login"):
+        return redirect("/login")
+    try:
+        cid=int(request.args.get("id") if request.method=="GET" else request.form.get("id"))
+    except Exception:
+        return redirect("/clientes")
+    con=db(); cur=con.cursor()
+    cur.execute("SELECT * FROM clientes WHERE id=%s",(cid,))
+    c=cur.fetchone()
+    if not c:
+        con.close(); return html_layout("No encontrado",card_html("<h2>Cliente no encontrado</h2>"))
+    cur.execute("SELECT COUNT(*) AS total FROM ordenes WHERE cliente_id=%s",(cid,))
+    total=int(cur.fetchone()["total"] or 0)
+    if request.method=="POST":
+        if request.form.get("confirmar")!="ELIMINAR":
+            con.close()
+            return html_layout("Confirmación",card_html("<h2>No se eliminó el cliente</h2><p>Debés escribir ELIMINAR exactamente.</p>"))
+        # Explicitly delete their orders first so test clients can be cleaned safely.
+        cur.execute("DELETE FROM ordenes WHERE cliente_id=%s",(cid,))
+        cur.execute("DELETE FROM clientes WHERE id=%s",(cid,))
+        con.commit(); con.close()
+        return redirect("/clientes")
+    con.close()
+    return html_layout("Eliminar cliente",card_html(f"""
+      <h2 style='color:#b91c1c;margin-top:0'>🗑️ Eliminar cliente</h2>
+      <p>Cliente: <b>{escape(str(c.get('nombre') or '-'))}</b></p>
+      <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px'>
+        Este cliente tiene <b>{total} orden(es)</b>. Si continuás, <b>también se eliminarán todas sus órdenes</b>.
+        Al borrarlas dejarán de intervenir en costos, ingresos y ganancias.
+      </div>
+      <form method='post' style='margin-top:16px'>
+        <input type='hidden' name='id' value='{cid}'>
+        <label>Escribí <b>ELIMINAR</b> para confirmar:</label>
+        <input name='confirmar' autocomplete='off' style='width:100%;max-width:300px;padding:10px;margin:8px 0;border:1px solid #d1d5db;border-radius:9px'>
+        <br><button style='background:#dc2626;color:white;border:0;padding:11px 16px;border-radius:10px;font-weight:bold'>Eliminar cliente y sus órdenes</button>
+        <a href='/cliente/{cid}' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
 
 
 @app.route("/difusion", methods=["GET", "POST"])
