@@ -42,15 +42,16 @@ def db():
     return psycopg.connect(DATABASE_URL, sslmode="require", row_factory=dict_row)
 
 
-def estado_presupuesto_badge(estado):
-    if estado == "Aprobado":
-        return "<span style='color:white;background:#16a34a;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Aceptado</span>"
-    elif estado == "Rechazado":
-        return "<span style='color:white;background:#dc2626;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Rechazado</span>"
-    elif estado == "Esperando aprobación":
-        return "<span style='color:white;background:#f59e0b;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>En espera</span>"
-    return "<span style='color:#6b7280;'>-</span>"
-
+def estado_presupuesto_badge(estado, aprobado=False, rechazado=False, fecha_aprobacion=None, fecha_rechazo=None):
+    if aprobado:
+        fecha = f"<br><small>{fecha_aprobacion.strftime('%d/%m/%Y %H:%M') if hasattr(fecha_aprobacion,'strftime') else fecha_aprobacion}</small>" if fecha_aprobacion else ""
+        return f"<span style='color:white;background:#16a34a;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Aceptado</span>{fecha}"
+    if rechazado:
+        fecha = f"<br><small>{fecha_rechazo.strftime('%d/%m/%Y %H:%M') if hasattr(fecha_rechazo,'strftime') else fecha_rechazo}</small>" if fecha_rechazo else ""
+        return f"<span style='color:white;background:#dc2626;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Rechazado</span>{fecha}"
+    if estado == "Esperando aprobación":
+        return "<span style='color:white;background:#f59e0b;padding:6px 12px;border-radius:999px;font-weight:bold;font-size:12px;'>Pendiente</span>"
+    return "<span style='color:#6b7280;'>Sin decisión</span>"
 
 def html_layout(titulo, contenido):
     avisos = get_flashed_messages(with_categories=True)
@@ -180,6 +181,13 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_forma_pago TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_total NUMERIC;")
+    # Corrige órdenes antiguas marcadas como Entregado sin fecha de entrega.
+    # Si tienen comprobante, usamos su fecha; si no, la fecha actual.
+    cur.execute("""
+        UPDATE ordenes
+        SET fecha_entregado = COALESCE(fecha_comprobante::date, CURRENT_DATE)
+        WHERE estado = 'Entregado' AND fecha_entregado IS NULL
+    """)
 
 
     cur.execute("""
@@ -574,29 +582,32 @@ def finanzas():
             COALESCE(SUM(COALESCE(comprobante_total,presupuesto)-costo_repuestos),0) AS margen,
             COUNT(*) AS trabajos
         FROM ordenes
-        WHERE fecha_entregado IS NOT NULL
-          AND EXTRACT(YEAR FROM fecha_entregado)=%s
-          AND EXTRACT(MONTH FROM fecha_entregado)=%s
+        WHERE estado = 'Entregado'
+          AND COALESCE(fecha_entregado, fecha_comprobante::date) IS NOT NULL
+          AND EXTRACT(YEAR FROM COALESCE(fecha_entregado, fecha_comprobante::date))=%s
+          AND EXTRACT(MONTH FROM COALESCE(fecha_entregado, fecha_comprobante::date))=%s
     """, (anio, mes))
     mes_data = cur.fetchone() or {}
 
     cur.execute("""
         SELECT COALESCE(SUM(COALESCE(comprobante_total,presupuesto)),0) AS facturado_anual
         FROM ordenes
-        WHERE fecha_entregado IS NOT NULL
-          AND EXTRACT(YEAR FROM fecha_entregado)=%s
+        WHERE estado = 'Entregado'
+          AND COALESCE(fecha_entregado, fecha_comprobante::date) IS NOT NULL
+          AND EXTRACT(YEAR FROM COALESCE(fecha_entregado, fecha_comprobante::date))=%s
     """, (anio,))
     anual = float((cur.fetchone() or {}).get("facturado_anual") or 0)
 
     cur.execute("""
-        SELECT EXTRACT(MONTH FROM fecha_entregado)::int AS mes,
+        SELECT EXTRACT(MONTH FROM COALESCE(fecha_entregado, fecha_comprobante::date))::int AS mes,
                COALESCE(SUM(COALESCE(comprobante_total,presupuesto)),0) AS facturado,
                COALESCE(SUM(costo_repuestos),0) AS costos,
                COALESCE(SUM(COALESCE(comprobante_total,presupuesto)-costo_repuestos),0) AS margen,
                COUNT(*) AS trabajos
         FROM ordenes
-        WHERE fecha_entregado IS NOT NULL
-          AND EXTRACT(YEAR FROM fecha_entregado)=%s
+        WHERE estado = 'Entregado'
+          AND COALESCE(fecha_entregado, fecha_comprobante::date) IS NOT NULL
+          AND EXTRACT(YEAR FROM COALESCE(fecha_entregado, fecha_comprobante::date))=%s
         GROUP BY 1 ORDER BY 1
     """, (anio,))
     por_mes = {r['mes']: r for r in cur.fetchall()}
@@ -882,7 +893,7 @@ def buscar():
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Respuesta del cliente</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
       </tr>
     """
@@ -890,7 +901,7 @@ def buscar():
     for r in resultados:
         equipo = f"{r['tipo_equipo']} {r['marca']} {r['modelo']}"
         pres = "En diagnóstico" if float(r["presupuesto"] or 0) == 0 else f"${r['presupuesto']}"
-        badge = estado_presupuesto_badge(r["estado"])
+        badge = estado_presupuesto_badge(r["estado"], r.get("presupuesto_aprobado"), r.get("presupuesto_rechazado"), r.get("fecha_aprobacion"), r.get("fecha_rechazo"))
 
         html += f"""
         <tr>
@@ -944,7 +955,7 @@ def ver_ordenes():
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Equipo</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Estado</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;">Presupuesto</th>
-        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Decisión</th>
+        <th style="padding:12px; border-bottom:1px solid #dbeafe;">Respuesta del cliente</th>
         <th style="padding:12px; border-bottom:1px solid #dbeafe;"></th>
       </tr>
     """
@@ -952,7 +963,7 @@ def ver_ordenes():
     for o in ordenes:
         equipo = f"{o['tipo_equipo']} {o['marca']} {o['modelo']}"
         pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
-        badge = estado_presupuesto_badge(o["estado"])
+        badge = estado_presupuesto_badge(o["estado"], o.get("presupuesto_aprobado"), o.get("presupuesto_rechazado"), o.get("fecha_aprobacion"), o.get("fecha_rechazo"))
 
         html += f"""
         <tr>
@@ -1080,7 +1091,7 @@ def actualizar():
         cur.execute(
             """
             SELECT o.numero_orden, o.estado, o.diagnostico_tecnico, o.presupuesto,
-                   o.token_aprobacion, o.presupuesto_aprobado, o.presupuesto_rechazado,
+                   o.token_aprobacion, o.presupuesto_aprobado, o.presupuesto_rechazado, o.fecha_aprobacion, o.fecha_rechazo,
                    c.nombre, c.email
             FROM ordenes o
             JOIN clientes c ON o.cliente_id=c.id
@@ -1176,16 +1187,12 @@ def actualizar():
         return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
 
     if estado == "Esperando aprobación" and actual["estado"] != "Esperando aprobación":
-        nuevo_token = secrets.token_urlsafe(32)
-        cur.execute(
-            """
-            UPDATE ordenes
-            SET token_aprobacion=%s, presupuesto_aprobado=FALSE, fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE, fecha_rechazo=NULL
-            WHERE numero_orden=%s
-            """,
-            (nuevo_token, numero),
-        )
+        if not actual.get("presupuesto_aprobado") and not actual.get("presupuesto_rechazado"):
+            nuevo_token = secrets.token_urlsafe(32)
+            cur.execute(
+                "UPDATE ordenes SET token_aprobacion=%s WHERE numero_orden=%s",
+                (nuevo_token, numero),
+            )
 
     if estado == "Aprobado":
         cur.execute(
@@ -1207,24 +1214,19 @@ def actualizar():
             """,
             (datetime.datetime.now(), numero),
         )
-    elif estado not in ["Esperando aprobación", "Aprobado", "Rechazado"]:
-        cur.execute(
-            """
-            UPDATE ordenes
-            SET presupuesto_aprobado=FALSE, fecha_aprobacion=NULL,
-                presupuesto_rechazado=FALSE, fecha_rechazo=NULL
-            WHERE numero_orden=%s
-            """,
-            (numero,),
-        )
-
     cur.execute(
         """
         UPDATE ordenes
-        SET estado=%s, diagnostico_tecnico=%s, presupuesto=%s
+        SET estado=%s,
+            diagnostico_tecnico=%s,
+            presupuesto=%s,
+            fecha_entregado = CASE
+                WHEN %s = 'Entregado' THEN COALESCE(fecha_entregado, CURRENT_DATE)
+                ELSE fecha_entregado
+            END
         WHERE numero_orden=%s
         """,
-        (estado or actual["estado"], diag, pres or 0, numero),
+        (estado or actual["estado"], diag, pres or 0, estado or actual["estado"], numero),
     )
 
     cur.execute(
@@ -1904,50 +1906,79 @@ def comprobante():
     numero = request.values.get("numero", "").strip()
     if not numero:
         return redirect("/ver_ordenes")
+
     con = db(); cur = con.cursor()
-    cur.execute("""SELECT o.*, c.nombre, c.telefono, c.email FROM ordenes o JOIN clientes c ON c.id=o.cliente_id WHERE o.numero_orden=%s""", (numero,))
+    cur.execute("""SELECT o.*, c.nombre, c.telefono, c.email
+                   FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+                   WHERE o.numero_orden=%s""", (numero,))
     o = cur.fetchone()
     if not o:
-        con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
-    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
-    emp = cur.fetchone()
+        con.close()
+        return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+
+    # Si ya existe, no permitimos generar ni modificar otro comprobante para la misma orden.
+    if o.get("comprobante_numero"):
+        con.close()
+        total = o.get("comprobante_total") if o.get("comprobante_total") is not None else (o.get("presupuesto") or 0)
+        forma = o.get("comprobante_forma_pago") or o.get("forma_pago") or "-"
+        return html_layout("Comprobante", card_html(f"""
+          <h2 style='margin-top:0'>🧾 Comprobante ya emitido</h2>
+          <div style='background:#f0fdf4;border:1px solid #bbf7d0;padding:14px;border-radius:12px'>
+            <strong>✅ Esta orden ya tiene comprobante.</strong><br>
+            N.º: <strong>{escape(str(o['comprobante_numero']))}</strong><br>
+            Total: <strong>$ {float(total or 0):,.2f}</strong><br>
+            Forma de pago: <strong>{escape(str(forma))}</strong>
+          </div>
+          <p style='color:#64748b'>Para evitar duplicados, el sistema no permite generar un segundo comprobante para la misma orden.</p>
+          <div style='display:flex;gap:10px;flex-wrap:wrap'>
+            <a href='/imprimir_comprobante?numero={quote(numero)}' style='background:#334155;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>🖨️ Ver / imprimir</a>
+            <a href='/entrega?numero={quote(numero)}' style='background:#16a34a;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>📲 Enviar / entrega</a>
+            <a href='/ver_ordenes' style='padding:11px 5px'>Volver</a>
+          </div>
+        """))
+
     if request.method == "POST":
         forma = request.form.get("forma_pago", "").strip()
-        try: total = float(request.form.get("total", "0").replace(",", "."))
-        except: total = float(o['presupuesto'] or 0)
+        try:
+            total = float(request.form.get("total", "0").replace(",", "."))
+        except Exception:
+            total = float(o.get("presupuesto") or 0)
+
         token, comp = _asegurar_token_y_comprobante(cur, o)
-        cur.execute("UPDATE ordenes SET comprobante_forma_pago=%s, comprobante_total=%s, forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE numero_orden=%s", (forma,total,forma,numero))
+        cur.execute("""
+            UPDATE ordenes
+            SET comprobante_forma_pago=%s,
+                comprobante_total=%s,
+                forma_pago=COALESCE(NULLIF(%s,''),forma_pago)
+            WHERE numero_orden=%s
+        """, (forma, total, forma, numero))
         con.commit(); con.close()
-        flash(f"Comprobante de {numero} generado y guardado correctamente por $ {total:,.2f}.", "success")
+        flash(f"Comprobante {comp} generado y guardado correctamente por $ {total:,.2f}.", "success")
         return redirect(f"/comprobante?numero={quote(numero)}")
-    total = o['comprobante_total'] if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
-    forma = o.get('comprobante_forma_pago') or o.get('forma_pago') or ''
+
+    total = o.get("presupuesto") or 0
+    forma = o.get("forma_pago") or ""
     con.close()
-    html=f"""
+    return html_layout("Comprobante", card_html(f"""
       <h2 style='margin-top:0'>🧾 Generar comprobante</h2>
       <p><b>Orden:</b> {escape(numero)} · <b>Cliente:</b> {escape(o['nombre'] or '-')}</p>
       <p><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</p>
+      <div style='background:#fff7ed;border:1px solid #fed7aa;padding:12px;border-radius:10px;margin-bottom:14px'>
+        ⚠️ Una vez generado, este comprobante quedará asociado a la orden y <strong>no se podrá generar otro</strong>.
+      </div>
       <form method='post'>
         <input type='hidden' name='numero' value='{escape(numero)}'>
-        <label><b>Total cobrado / venta</b></label><br>
-        <input name='total' value='{total}' inputmode='decimal' style='padding:10px;width:220px;margin:6px 0 14px;border:1px solid #d1d5db;border-radius:10px'><br>
+        <label><b>Total final de la venta</b></label><br>
+        <input name='total' value='{total}' inputmode='decimal' required style='padding:10px;width:220px;margin:6px 0 14px;border:1px solid #d1d5db;border-radius:10px'><br>
         <label><b>Forma de pago</b></label><br>
-        <select name='forma_pago' style='padding:10px;width:240px;margin:6px 0 16px;border:1px solid #d1d5db;border-radius:10px'>
+        <select name='forma_pago' required style='padding:10px;width:240px;margin:6px 0 16px;border:1px solid #d1d5db;border-radius:10px'>
           {''.join(f"<option value='{x}' {'selected' if forma==x else ''}>{x}</option>" for x in ['Efectivo','Transferencia','Mercado Pago','Débito','Crédito','Otro'])}
         </select><br>
-        <button style='background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800;cursor:pointer'>💾 Generar / guardar comprobante</button>
+        <button style='background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:800;cursor:pointer'>💾 Generar comprobante</button>
+        <a href='/ver_ordenes' style='margin-left:12px'>Cancelar</a>
       </form>
-      <div style='display:flex;gap:10px;flex-wrap:wrap;margin-top:14px'>
-        <a href='/imprimir_comprobante?numero={quote(numero)}' style='background:#334155;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>🖨️ Ver / imprimir</a>
-        {f"<a href='/documento/{o.get('comprobante_token')}' target='_blank' style='background:#2563eb;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>📄 Ver documento público</a>" if o.get('comprobante_token') else ""}
-        <a href='/entrega?numero={quote(numero)}' style='background:#16a34a;color:white;padding:11px 15px;border-radius:10px;text-decoration:none;font-weight:bold'>📲 Enviar / entrega</a>
-        <a href='/ver_ordenes' style='padding:11px 5px'>Volver</a>
-      </div>
-      <form style='display:none'>
-      </form>
-      <p style='font-size:12px;color:#64748b;margin-top:18px'>Documento interno de la operación. La identificación fiscal usa los datos configurados de NR Tech.</p>
-    """
-    return html_layout("Comprobante", card_html(html))
+    """))
+
 
 @app.get("/imprimir_comprobante")
 def imprimir_comprobante():
@@ -1961,7 +1992,17 @@ def imprimir_comprobante():
     cur.execute("SELECT * FROM configuracion_empresa WHERE id=1"); emp=cur.fetchone()
     if not o:
         con.close(); return "Orden no encontrada",404
-    token, comp=_asegurar_token_y_comprobante(cur,o); con.commit(); con.close()
+    if not o.get("comprobante_numero"):
+        con.close()
+        flash("Primero tenés que generar el comprobante.", "error")
+        return redirect(f"/comprobante?numero={quote(numero)}")
+    token = o.get("token_publico")
+    comp = o.get("comprobante_numero")
+    if not token:
+        token = secrets.token_urlsafe(24)
+        cur.execute("UPDATE ordenes SET token_publico=%s WHERE numero_orden=%s", (token, numero))
+        con.commit()
+    con.close()
     total=o.get('comprobante_total') if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
     forma=o.get('comprobante_forma_pago') or o.get('forma_pago') or '-'
     trabajo=o.get('diagnostico_tecnico') or o.get('falla_cliente') or 'Servicio técnico'
@@ -1991,20 +2032,24 @@ def entrega():
         orden = cur.fetchone()
         if not orden:
             con.close(); return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
-        token, comprobante = _asegurar_token_y_comprobante(cur, orden)
-        # Si todavía no se generó el comprobante V1, usamos el presupuesto como total inicial.
-        # Luego puede editarse desde el botón Comprobante sin perder la entrega/garantía.
+        token = orden.get("token_publico")
+        if not token:
+            token = secrets.token_urlsafe(24)
+            cur.execute("UPDATE ordenes SET token_publico=%s WHERE numero_orden=%s", (token, numero))
+        comprobante = orden.get("comprobante_numero")
         cur.execute("""
             UPDATE ordenes
             SET garantia_dias=%s,
                 fecha_entregado=COALESCE(fecha_entregado, CURRENT_DATE),
-                estado='Entregado',
-                comprobante_total=COALESCE(comprobante_total, presupuesto),
-                comprobante_forma_pago=COALESCE(NULLIF(comprobante_forma_pago,''), forma_pago)
+                estado='Entregado'
             WHERE numero_orden=%s
         """, (garantia_dias, numero))
         con.commit(); con.close()
         url_publica = f"{BASE_URL or request.url_root.rstrip('/')}/documento/{token}"
+
+        if accion in ("email", "imprimir", "whatsapp") and not comprobante:
+            flash("La entrega quedó marcada, pero primero tenés que generar el comprobante antes de enviarlo o imprimirlo.", "error")
+            return redirect(f"/comprobante?numero={quote(numero)}")
 
         if accion == "email":
             orden2 = _buscar_entrega_por_numero(numero)
