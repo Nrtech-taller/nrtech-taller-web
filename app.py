@@ -1,4 +1,4 @@
-from flask import Flask, request, redirect, session
+from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
 from psycopg.rows import dict_row
@@ -53,6 +53,18 @@ def estado_presupuesto_badge(estado):
 
 
 def html_layout(titulo, contenido):
+    avisos = get_flashed_messages(with_categories=True)
+    avisos_html = ""
+    for categoria, mensaje in avisos:
+        if categoria == "error":
+            fondo, borde, color, icono = "#fef2f2", "#fecaca", "#991b1b", "❌"
+        else:
+            fondo, borde, color, icono = "#f0fdf4", "#bbf7d0", "#166534", "✅"
+        avisos_html += f"""
+        <div style="background:{fondo};border:1px solid {borde};color:{color};padding:13px 15px;border-radius:12px;margin-bottom:14px;font-weight:700;">
+          {icono} {escape(str(mensaje))}
+        </div>
+        """
     return f"""
     <html>
       <head>
@@ -67,6 +79,7 @@ def html_layout(titulo, contenido):
           </div>
 
           <div style="margin-top:18px;">
+            {avisos_html}
             {contenido}
           </div>
         </div>
@@ -238,7 +251,7 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
                  presupuesto_aprobado=False, presupuesto_rechazado=False):
     if not destino or not REMITENTE_EMAIL or not CONTRASENA_APP:
         print("Email no enviado: faltan GMAIL_USER o GMAIL_APP_PASSWORD.")
-        return
+        return False
 
     try:
         pres = float(presupuesto or 0)
@@ -408,8 +421,10 @@ def enviar_email(destino, numero_orden, cliente, tipo, marca, modelo, estado, pr
             smtp.login(REMITENTE_EMAIL, CONTRASENA_APP)
             smtp.send_message(msg)
         print("Email enviado correctamente.")
+        return True
     except Exception as e:
         print("Error al enviar email:", e)
+        return False
 
 
 init_db()
@@ -785,12 +800,19 @@ def crear():
     con.commit()
     con.close()
 
+    flash(f"Orden {numero_orden} creada correctamente.", "success")
     if enviar_ingreso and email:
-        enviar_email(
+        ok_email = enviar_email(
             destino=email, numero_orden=numero_orden, cliente=nombre, tipo=tipo, marca=marca,
             modelo=modelo, estado="Recibido en taller", presupuesto=0, tipo_mensaje="ingreso",
             token_aprobacion=token_aprobacion, presupuesto_aprobado=False, presupuesto_rechazado=False
         )
+        if ok_email:
+            flash(f"Email de ingreso enviado correctamente a {email}.", "success")
+        else:
+            flash("La orden se creó, pero el email no pudo enviarse.", "error")
+    elif enviar_ingreso and not email:
+        flash("La orden se creó, pero no se envió email porque el cliente no tiene correo.", "error")
 
     return redirect(f"/editar?numero={numero_orden}")
 
@@ -1220,14 +1242,21 @@ def actualizar():
     con.commit()
     con.close()
 
+    flash(f"Orden {numero} actualizada correctamente.", "success")
     if enviar and info and info["email"]:
-        enviar_email(
+        ok_email = enviar_email(
             destino=info["email"], numero_orden=info["numero_orden"], cliente=info["nombre"],
             tipo=info["tipo_equipo"], marca=info["marca"], modelo=info["modelo"],
             estado=info["estado"], presupuesto=info["presupuesto"], tipo_mensaje="actualizacion",
             token_aprobacion=info["token_aprobacion"], presupuesto_aprobado=info["presupuesto_aprobado"],
             presupuesto_rechazado=info["presupuesto_rechazado"]
         )
+        if ok_email:
+            flash(f"Email enviado correctamente a {info['email']}.", "success")
+        else:
+            flash("La actualización se guardó, pero el email no pudo enviarse.", "error")
+    elif enviar:
+        flash("La actualización se guardó, pero el cliente no tiene email.", "error")
 
     return redirect("/ver_ordenes")
 
@@ -1261,13 +1290,17 @@ def enviar_presupuesto_manual():
     if info["estado"] != "Esperando aprobación" or float(info["presupuesto"] or 0) <= 0:
         return html_layout("No disponible", card_html(f"<h2 style='margin-top:0;'>No se puede enviar el presupuesto</h2><p>La orden debe estar en <strong>Esperando aprobación</strong> y tener un importe mayor a 0.</p><p><a href='/actualizar?numero={numero}'>Volver</a></p>"))
 
-    enviar_email(
+    ok_email = enviar_email(
         destino=info["email"], numero_orden=info["numero_orden"], cliente=info["nombre"],
         tipo=info["tipo_equipo"], marca=info["marca"], modelo=info["modelo"],
         estado=info["estado"], presupuesto=info["presupuesto"], tipo_mensaje="actualizacion",
         token_aprobacion=info["token_aprobacion"], presupuesto_aprobado=info["presupuesto_aprobado"],
         presupuesto_rechazado=info["presupuesto_rechazado"]
     )
+    if ok_email:
+        flash(f"Presupuesto enviado correctamente a {info['email']}.", "success")
+    else:
+        flash("No se pudo enviar el presupuesto por email.", "error")
     return redirect(f"/actualizar?numero={numero}")
 
 
@@ -1885,7 +1918,7 @@ def comprobante():
         token, comp = _asegurar_token_y_comprobante(cur, o)
         cur.execute("UPDATE ordenes SET comprobante_forma_pago=%s, comprobante_total=%s, forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE numero_orden=%s", (forma,total,forma,numero))
         con.commit(); con.close()
-        return redirect(f"/imprimir_comprobante?numero={quote(numero)}")
+        return redirect(f"/imprimir_comprobante?numero={quote(numero)}&generado=1")
     total = o['comprobante_total'] if o.get('comprobante_total') is not None else (o['presupuesto'] or 0)
     forma = o.get('comprobante_forma_pago') or o.get('forma_pago') or ''
     con.close()
@@ -1913,6 +1946,7 @@ def imprimir_comprobante():
     if not session.get("login"):
         return redirect("/login")
     numero=request.args.get("numero","").strip()
+    generado = request.args.get("generado") == "1"
     con=db(); cur=con.cursor()
     cur.execute("""SELECT o.*,c.nombre,c.telefono,c.email FROM ordenes o JOIN clientes c ON c.id=o.cliente_id WHERE o.numero_orden=%s""",(numero,))
     o=cur.fetchone()
@@ -1925,6 +1959,7 @@ def imprimir_comprobante():
     trabajo=o.get('diagnostico_tecnico') or o.get('falla_cliente') or 'Servicio técnico'
     fecha=o.get('fecha_comprobante') or datetime.datetime.now()
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(comp)}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.head{{border-bottom:3px solid #111;padding-bottom:12px}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px;margin-top:16px}}.r{{margin:7px 0}}button{{padding:10px 16px}}@media print{{button{{display:none}}}}</style></head><body>
+      {("<div style='background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:12px 14px;border-radius:10px;margin-bottom:14px;font-weight:bold'>✅ Comprobante generado correctamente y guardado en la orden.</div>" if generado else "")}
       <div class='head'><h1 style='margin:0'>{escape((emp or {}).get('nombre_comercial') or 'NR Tech')}</h1><b>MONOTRIBUTO</b><div>{escape((emp or {}).get('titular') or '')}</div><div>RUT: {escape((emp or {}).get('rut') or '-')}</div><div>{escape((emp or {}).get('domicilio_fiscal') or '')}</div><div>Tel. {escape((emp or {}).get('telefono') or '')} · {escape((emp or {}).get('email') or '')}</div></div>
       <div class='box'><h2 style='margin-top:0'>Comprobante de operación</h2><div class='r'><b>N.º:</b> {escape(comp)}</div><div class='r'><b>Fecha:</b> {fecha.strftime('%d/%m/%Y') if hasattr(fecha,'strftime') else escape(str(fecha))}</div><div class='r'><b>Orden:</b> {escape(numero)}</div><hr><div class='r'><b>Cliente:</b> {escape(o['nombre'] or '-')}</div><div class='r'><b>Equipo:</b> {escape(' '.join(filter(None,[o['tipo_equipo'],o['marca'],o['modelo']])) or '-')}</div><div class='r'><b>Trabajo:</b> {escape(trabajo)}</div><div class='r'><b>Forma de pago:</b> {escape(str(forma))}</div><div class='r' style='font-size:22px'><b>Total: $ {float(total or 0):,.2f}</b></div>
       {f"<hr><div class='r'><b>Garantía:</b> {int(o.get('garantia_dias') or 30)} días</div><div class='r'><img src='/qr/{token}.png' style='width:120px;height:120px' alt='QR'><br><small>Escaneá para ver comprobante y garantía.</small></div>" if o.get('fecha_entregado') else ''}</div>
@@ -1983,12 +2018,14 @@ def entrega():
             try:
                 with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=25) as smtp:
                     smtp.login(REMITENTE_EMAIL, CONTRASENA_APP); smtp.send_message(msg)
+                flash(f"Comprobante y garantía enviados correctamente a {orden2['email']}.", "success")
             except Exception as e:
                 print("Error envío entrega:", e)
-            return redirect(f"/entrega?numero={numero}&enviado=1")
+                flash("La entrega quedó guardada, pero el email no pudo enviarse.", "error")
+            return redirect(f"/entrega?numero={numero}")
 
         if accion == "imprimir":
-            return redirect(f"/imprimir_entrega?numero={numero}")
+            return redirect(f"/imprimir_entrega?numero={numero}&guardado=1")
         if accion == "whatsapp":
             orden2 = _buscar_entrega_por_numero(numero)
             tel = ''.join(ch for ch in str(orden2['telefono'] or '') if ch.isdigit())
@@ -1997,6 +2034,7 @@ def entrega():
             texto = f"Hola {orden2['nombre']}, tu equipo ya fue entregado por NR Tech. Orden {numero}. Comprobante {comprobante}. Garantía: {garantia_dias} días. Podés ver tu comprobante, QR y garantía acá: {url_publica}"
             destino = f"https://wa.me/{tel}?text={quote(texto)}" if tel else f"https://wa.me/?text={quote(texto)}"
             return redirect(destino)
+        flash(f"Entrega de {numero} guardada correctamente.", "success")
         return redirect(f"/entrega?numero={numero}")
 
     numero = request.args.get("numero", "").strip()
@@ -2121,6 +2159,7 @@ def imprimir_entrega():
     if not session.get("login"):
         return redirect("/login")
     numero = request.args.get("numero", "").strip()
+    guardado = request.args.get("guardado") == "1"
     con = db(); cur = con.cursor()
     cur.execute("""SELECT o.*, c.nombre FROM ordenes o JOIN clientes c ON o.cliente_id=c.id WHERE o.numero_orden=%s""", (numero,))
     x = cur.fetchone()
@@ -2130,6 +2169,7 @@ def imprimir_entrega():
     cfg = _config_empresa()
     fecha = x['fecha_entregado'] or datetime.date.today(); garantia=int(x['garantia_dias'] or 30); vence=fecha+datetime.timedelta(days=garantia)
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>{comprobante}</title><style>@page{{size:A4;margin:16mm}}body{{font-family:Arial;color:#111;max-width:760px;margin:auto}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px}}.row{{margin:8px 0}}img{{width:150px;height:150px}}@media print{{button{{display:none}}}}</style></head><body>
+      {("<div style='background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:12px 14px;border-radius:10px;margin-bottom:14px;font-weight:bold'>✅ Entrega guardada correctamente. Comprobante y garantía listos para imprimir.</div>" if guardado else "")}
       <div class='box'><h1 style='margin:0'>{escape(str(cfg.get('nombre_comercial') or 'NR Tech'))}</h1><div>Tecnología en buenas manos</div>
       <div style='border:2px solid #111;padding:7px;text-align:center;font-weight:bold;margin:12px 0'>MONOTRIBUTO</div>
       <div class='row'><b>RUT:</b> {escape(str(cfg.get('rut') or 'Pendiente de configurar'))}</div><hr>
