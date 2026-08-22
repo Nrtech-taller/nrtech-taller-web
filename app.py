@@ -136,8 +136,10 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("""CREATE TABLE IF NOT EXISTS ventas (
       id SERIAL PRIMARY KEY, numero_venta TEXT UNIQUE, cliente_id INTEGER REFERENCES clientes(id),
       fecha TIMESTAMP DEFAULT NOW(), forma_pago TEXT, total NUMERIC DEFAULT 0,
-      costo_total NUMERIC DEFAULT 0, comprobante_numero TEXT UNIQUE, token_publico TEXT UNIQUE
+      costo_total NUMERIC DEFAULT 0, comprobante_numero TEXT UNIQUE, token_publico TEXT UNIQUE,
+      garantia_dias INTEGER DEFAULT 30
     );""")
+    cur.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS garantia_dias INTEGER DEFAULT 30;")
     cur.execute("""CREATE TABLE IF NOT EXISTS venta_items (
       id SERIAL PRIMARY KEY, venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
       descripcion TEXT NOT NULL, cantidad INTEGER DEFAULT 1,
@@ -576,6 +578,8 @@ def venta_directa():
     if request.method=="POST":
         nombre=request.form.get("nombre","").strip(); tel=request.form.get("telefono","").strip()
         email=request.form.get("email","").strip(); forma=request.form.get("forma_pago","").strip()
+        try: garantia_dias=max(0,int(request.form.get("garantia_dias","30") or 30))
+        except: garantia_dias=30
         ds=request.form.getlist("descripcion"); qs=request.form.getlist("cantidad")
         ps=request.form.getlist("precio"); cs=request.form.getlist("costo")
         items=[]; total=0.0; costos=0.0
@@ -597,7 +601,7 @@ def venta_directa():
             cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",(nombre or "Cliente mostrador",tel,email))
             cid=cur.fetchone()["id"]
         token=secrets.token_urlsafe(24)
-        cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico) VALUES('',%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token))
+        cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico,garantia_dias) VALUES('',%s,%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token,garantia_dias))
         vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-FAC-{datetime.datetime.now().year}-{vid:05d}"
         cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
         for it in items: cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario) VALUES(%s,%s,%s,%s,%s)",(vid,*it))
@@ -609,8 +613,11 @@ def venta_directa():
     <form method='post'><h3>Cliente <small style='font-weight:normal'>(opcional)</small></h3>
     <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px'><input name='nombre' placeholder='Nombre' style='padding:10px'><input name='telefono' placeholder='WhatsApp' style='padding:10px'><input name='email' type='email' placeholder='Email' style='padding:10px'></div>
     <h3>Artículos</h3><div id='items'><div class='item' style='display:grid;grid-template-columns:2fr .6fr 1fr 1fr;gap:8px;margin-bottom:8px'><input name='descripcion' required placeholder='Artículo' style='padding:10px'><input name='cantidad' type='number' min='1' value='1' style='padding:10px'><input name='precio' required placeholder='Precio venta' style='padding:10px'><input name='costo' placeholder='Costo' style='padding:10px'></div></div>
-    <button type='button' onclick='addItem()'>+ Agregar artículo</button><h3>Pago</h3><select name='forma_pago' required style='padding:10px'><option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option><option>Débito</option><option>Crédito</option><option>Otro</option></select><br>
-    <button style='margin-top:16px;background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>💾 Registrar venta</button></form>
+    <button type='button' onclick='addItem()'>+ Agregar artículo</button>
+    <h3>Pago y garantía</h3>
+    <select name='forma_pago' required style='padding:10px;margin-right:8px'><option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option><option>Débito</option><option>Crédito</option><option>Otro</option></select>
+    <select name='garantia_dias' style='padding:10px'><option value='0'>Sin garantía comercial</option><option value='30' selected>Garantía 30 días</option><option value='90'>Garantía 90 días</option><option value='180'>Garantía 180 días</option><option value='365'>Garantía 365 días</option></select><br>
+    <button style='margin-top:16px;background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>💾 Registrar venta y emitir factura</button></form>
     <script>function addItem(){let d=document.querySelector('.item').cloneNode(true);d.querySelectorAll('input').forEach(x=>x.value=x.name==='cantidad'?'1':'');document.getElementById('items').appendChild(d)}</script>
     """))
 
@@ -630,21 +637,141 @@ def venta_comprobante(vid):
 
 @app.get("/venta_publica/<token>")
 def venta_publica(token):
-    con=db(); cur=con.cursor(); cur.execute("SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE token_publico=%s",(token,)); v=cur.fetchone()
-    if not v: con.close(); return "Comprobante no encontrado",404
-    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(v["id"],)); its=cur.fetchall(); con.close()
-    filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
-    return html_layout("Comprobante",card_html(f"<h2>NR Tech</h2><p><strong>FACTURA</strong><br><b>{v['comprobante_numero']}</b></p><p>Cliente: {escape(str(v.get('nombre') or 'Consumidor final'))}</p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p>"))
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT v.*,c.nombre FROM ventas v
+                   LEFT JOIN clientes c ON c.id=v.cliente_id
+                   WHERE token_publico=%s""",(token,))
+    v=cur.fetchone()
+    if not v:
+        con.close()
+        return "Factura no encontrada",404
+    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(v["id"],))
+    its=cur.fetchall()
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
+    cfg=cur.fetchone() or {}
+    con.close()
+
+    filas="".join(
+        f"<tr><td style='padding:9px;border-bottom:1px solid #e5e7eb'>{escape(i['descripcion'])}</td>"
+        f"<td style='padding:9px;border-bottom:1px solid #e5e7eb;text-align:center'>{i['cantidad']}</td>"
+        f"<td style='padding:9px;border-bottom:1px solid #e5e7eb;text-align:right'>$ {float(i['precio_unitario']):,.2f}</td>"
+        f"<td style='padding:9px;border-bottom:1px solid #e5e7eb;text-align:right'>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>"
+        for i in its
+    )
+    fecha=v["fecha"].date() if hasattr(v["fecha"],"date") else datetime.date.today()
+    dias=int(v.get("garantia_dias") or 0)
+    vence=fecha+datetime.timedelta(days=dias) if dias>0 else None
+    garantia_html = (
+        f"""<div style='background:#f0fdf4;border:1px solid #bbf7d0;padding:14px;border-radius:12px;margin-top:18px'>
+        <h3 style='margin-top:0'>🛡️ Garantía de la venta</h3>
+        <p><strong>Duración:</strong> {dias} días · <strong>Válida hasta:</strong> {vence.strftime('%d/%m/%Y')}</p>
+        <p><strong>Cubre:</strong> fallas o defectos relacionados directamente con los artículos detallados en esta factura, dentro del plazo indicado y sujetos a revisión.</p>
+        <p><strong>No cubre:</strong> golpes, caídas, humedad o líquidos, sobrecargas eléctricas, mal uso, daños físicos, manipulación por terceros ni daños ajenos al funcionamiento normal del producto.</p>
+        <p style='font-size:13px;color:#475569'>Para solicitar garantía se deberá presentar esta factura o identificar la venta correspondiente. NR Tech realizará una revisión previa para determinar si corresponde la cobertura.</p>
+        </div>"""
+        if dias>0 else
+        "<div style='background:#f8fafc;padding:12px;border-radius:10px;margin-top:18px'><strong>Garantía comercial:</strong> no especificada para esta venta.</div>"
+    )
+    return html_layout("Factura NR Tech",card_html(f"""
+      <div style='text-align:center'>
+        <h1 style='margin-bottom:4px'>{escape(str(cfg.get('nombre_comercial') or 'NR Tech'))}</h1>
+        <div style='color:#64748b'>Tecnología en buenas manos</div>
+      </div>
+      <div style='border:2px solid #111827;padding:8px;text-align:center;font-weight:900;margin:14px 0'>FACTURA · MONOTRIBUTO</div>
+      <p><strong>Titular:</strong> {escape(str(cfg.get('titular') or '-'))}<br>
+      <strong>RUT:</strong> {escape(str(cfg.get('rut') or '-'))}<br>
+      <strong>Domicilio fiscal:</strong> {escape(str(cfg.get('domicilio_fiscal') or '-'))}<br>
+      <strong>Tel./WhatsApp:</strong> {escape(str(cfg.get('telefono') or '-'))}<br>
+      <strong>Email:</strong> {escape(str(cfg.get('email') or '-'))}</p>
+      <hr>
+      <p><strong>Factura:</strong> {escape(str(v['comprobante_numero']))}<br>
+      <strong>Fecha:</strong> {v['fecha'].strftime('%d/%m/%Y %H:%M') if hasattr(v['fecha'],'strftime') else escape(str(v['fecha']))}<br>
+      <strong>Cliente:</strong> {escape(str(v.get('nombre') or 'Consumidor final'))}<br>
+      <strong>Forma de pago:</strong> {escape(str(v['forma_pago'] or '-'))}</p>
+      <table style='width:100%;border-collapse:collapse;margin-top:12px'>
+        <tr style='background:#eff6ff'><th style='padding:9px;text-align:left'>Artículo</th><th>Cant.</th><th style='text-align:right'>Precio</th><th style='text-align:right'>Subtotal</th></tr>
+        {filas}
+      </table>
+      <h2 style='text-align:right'>Total: $ {float(v['total']):,.2f}</h2>
+      {garantia_html}
+      <div style='display:grid;grid-template-columns:1fr 150px;gap:16px;align-items:center;margin-top:18px'>
+        <div style='font-size:12px;color:#64748b'>Factura y respaldo de garantía de NR Tech. Guardá este documento para futuras consultas.</div>
+        <div style='text-align:center'><img src='/qr_venta/{token}.png' style='width:130px;height:130px'><div style='font-size:11px'>Verificar factura</div></div>
+      </div>
+    """))
+
+
+@app.get("/qr_venta/<token>.png")
+def qr_venta(token):
+    url=f"{BASE_URL or request.url_root.rstrip('/')}/venta_publica/{token}"
+    img=qrcode.make(url)
+    bio=BytesIO(); img.save(bio,format="PNG"); bio.seek(0)
+    return send_file(bio,mimetype="image/png")
+
 
 @app.get("/venta_imprimir/<int:vid>")
 def venta_imprimir(vid):
-    if not session.get("login"): return redirect("/login")
-    con=db(); cur=con.cursor(); cur.execute("SELECT * FROM ventas WHERE id=%s",(vid,)); v=cur.fetchone()
-    if not v: con.close(); return redirect("/")
-    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,)); its=cur.fetchall(); con.close()
-    filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
-    return f"""<!doctype html><html><head><meta charset='utf-8'><style>body{{font-family:Arial;max-width:760px;margin:25px auto}}table{{width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>🖨️ Imprimir</button><h1>NR Tech</h1><h2>FACTURA</h2><h3>{v['comprobante_numero']}</h3><table>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p></body></html>"""
+    if not session.get("login"):
+        return redirect("/login")
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s""",(vid,))
+    v=cur.fetchone()
+    if not v:
+        con.close()
+        return redirect("/")
+    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,))
+    its=cur.fetchall()
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
+    cfg=cur.fetchone() or {}
+    con.close()
 
+    filas="".join(
+        f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>"
+        for i in its
+    )
+    dias=int(v.get("garantia_dias") or 0)
+    fecha=v["fecha"].date() if hasattr(v["fecha"],"date") else datetime.date.today()
+    vence=fecha+datetime.timedelta(days=dias) if dias>0 else None
+    garantia = f"""
+      <div class='garantia'>
+        <h3>Condiciones de garantía – NR Tech</h3>
+        <p><b>Garantía:</b> {dias} días — válida hasta {vence.strftime('%d/%m/%Y')}</p>
+        <p>La garantía cubre fallas o defectos relacionados directamente con los artículos detallados en esta factura durante el plazo indicado y sujetos a revisión.</p>
+        <p>No cubre golpes, caídas, humedad o líquidos, sobrecargas eléctricas, mal uso, daños físicos, manipulación por terceros ni daños ajenos al funcionamiento normal del producto.</p>
+        <p>Para solicitar garantía se deberá presentar esta factura o identificar la venta correspondiente. NR Tech realizará una revisión previa para determinar si corresponde la cobertura.</p>
+      </div>
+    """ if dias>0 else "<div class='garantia'><b>Garantía comercial:</b> no especificada para esta venta.</div>"
+
+    return f"""<!doctype html><html><head><meta charset='utf-8'>
+    <title>{escape(str(v['comprobante_numero']))}</title>
+    <style>
+      @page{{size:A4;margin:15mm}}
+      body{{font-family:Arial;color:#111827;max-width:780px;margin:20px auto}}
+      .head{{border-bottom:3px solid #111827;padding-bottom:12px}}
+      .fiscal{{border:2px solid #111827;text-align:center;padding:8px;font-weight:900;margin:14px 0}}
+      table{{width:100%;border-collapse:collapse}} td,th{{padding:8px;border-bottom:1px solid #ddd;text-align:left}}
+      .garantia{{background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:12px;margin-top:18px;font-size:12px;line-height:1.45}}
+      .qr{{text-align:right;margin-top:12px}} .qr img{{width:120px;height:120px}}
+      @media print{{button{{display:none}}body{{margin:0}}}}
+    </style></head><body>
+    <button onclick='window.print()'>🖨️ Imprimir</button>
+    <div class='head'><h1 style='margin:0'>{escape(str(cfg.get('nombre_comercial') or 'NR Tech'))}</h1>
+      <div>Tecnología en buenas manos</div>
+      <div>{escape(str(cfg.get('titular') or '-'))}</div>
+      <div>RUT: {escape(str(cfg.get('rut') or '-'))}</div>
+      <div>{escape(str(cfg.get('domicilio_fiscal') or '-'))}</div>
+      <div>Tel./WhatsApp: {escape(str(cfg.get('telefono') or '-'))} · {escape(str(cfg.get('email') or '-'))}</div>
+    </div>
+    <div class='fiscal'>FACTURA · MONOTRIBUTO</div>
+    <p><b>N.º:</b> {escape(str(v['comprobante_numero']))}<br>
+       <b>Fecha:</b> {v['fecha'].strftime('%d/%m/%Y %H:%M') if hasattr(v['fecha'],'strftime') else escape(str(v['fecha']))}<br>
+       <b>Cliente:</b> {escape(str(v.get('nombre') or 'Consumidor final'))}<br>
+       <b>Forma de pago:</b> {escape(str(v['forma_pago'] or '-'))}</p>
+    <table><tr><th>Artículo</th><th>Cant.</th><th>Precio</th><th>Subtotal</th></tr>{filas}</table>
+    <h2 style='text-align:right'>Total: $ {float(v['total']):,.2f}</h2>
+    {garantia}
+    <div class='qr'><img src='/qr_venta/{v["token_publico"]}.png'><br><small>Verificar factura y garantía</small></div>
+    </body></html>"""
 
 
 @app.get("/ventas")
