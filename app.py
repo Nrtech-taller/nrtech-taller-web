@@ -133,6 +133,16 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS notas TEXT;")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS fecha_alta TIMESTAMP DEFAULT NOW();")
     cur.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS acepta_promociones BOOLEAN DEFAULT FALSE;")
+    cur.execute("""CREATE TABLE IF NOT EXISTS ventas (
+      id SERIAL PRIMARY KEY, numero_venta TEXT UNIQUE, cliente_id INTEGER REFERENCES clientes(id),
+      fecha TIMESTAMP DEFAULT NOW(), forma_pago TEXT, total NUMERIC DEFAULT 0,
+      costo_total NUMERIC DEFAULT 0, comprobante_numero TEXT UNIQUE, token_publico TEXT UNIQUE
+    );""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS venta_items (
+      id SERIAL PRIMARY KEY, venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
+      descripcion TEXT NOT NULL, cantidad INTEGER DEFAULT 1,
+      precio_unitario NUMERIC DEFAULT 0, costo_unitario NUMERIC DEFAULT 0
+    );""")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS ordenes (
@@ -543,6 +553,7 @@ def home():
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
+      <a href="/venta" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛒 Nueva venta</h3><p style="margin:0;color:#6b7280;">Accesorios y ventas de mostrador.</p></div></a>
       <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
       <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
@@ -555,6 +566,83 @@ def home():
     </div>
     """
     return html_layout("Inicio", contenido)
+
+
+
+@app.route("/venta", methods=["GET","POST"])
+def venta_directa():
+    if not session.get("login"): return redirect("/login")
+    if request.method=="POST":
+        nombre=request.form.get("nombre","").strip(); tel=request.form.get("telefono","").strip()
+        email=request.form.get("email","").strip(); forma=request.form.get("forma_pago","").strip()
+        ds=request.form.getlist("descripcion"); qs=request.form.getlist("cantidad")
+        ps=request.form.getlist("precio"); cs=request.form.getlist("costo")
+        items=[]; total=0.0; costos=0.0
+        for d,q,p,c in zip(ds,qs,ps,cs):
+            if not d.strip(): continue
+            try: q=max(1,int(q or 1))
+            except: q=1
+            try: pv=float((p or "0").replace(",","."))
+            except: pv=0
+            try: cv=float((c or "0").replace(",","."))
+            except: cv=0
+            items.append((d.strip(),q,pv,cv)); total+=q*pv; costos+=q*cv
+        if not items:
+            flash("Agregá al menos un artículo.","error"); return redirect("/venta")
+        con=db(); cur=con.cursor(); cid=None
+        if tel:
+            cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1",(tel,)); r=cur.fetchone(); cid=r["id"] if r else None
+        if not cid and (nombre or tel or email):
+            cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",(nombre or "Cliente mostrador",tel,email))
+            cid=cur.fetchone()["id"]
+        token=secrets.token_urlsafe(24)
+        cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico) VALUES('',%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token))
+        vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-VENTA-{datetime.datetime.now().year}-{vid:05d}"
+        cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
+        for it in items: cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario) VALUES(%s,%s,%s,%s,%s)",(vid,*it))
+        con.commit(); con.close()
+        flash(f"Venta {numero} registrada por $ {total:,.2f}.","success")
+        return redirect(f"/venta_comprobante/{vid}")
+    return html_layout("Nueva venta",card_html("""
+    <h2 style='margin-top:0'>🛒 Nueva venta</h2><p style='color:#64748b'>Para cargadores, cables, fundas, vidrios y otras ventas sin reparación.</p>
+    <form method='post'><h3>Cliente <small style='font-weight:normal'>(opcional)</small></h3>
+    <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px'><input name='nombre' placeholder='Nombre' style='padding:10px'><input name='telefono' placeholder='WhatsApp' style='padding:10px'><input name='email' type='email' placeholder='Email' style='padding:10px'></div>
+    <h3>Artículos</h3><div id='items'><div class='item' style='display:grid;grid-template-columns:2fr .6fr 1fr 1fr;gap:8px;margin-bottom:8px'><input name='descripcion' required placeholder='Artículo' style='padding:10px'><input name='cantidad' type='number' min='1' value='1' style='padding:10px'><input name='precio' required placeholder='Precio venta' style='padding:10px'><input name='costo' placeholder='Costo' style='padding:10px'></div></div>
+    <button type='button' onclick='addItem()'>+ Agregar artículo</button><h3>Pago</h3><select name='forma_pago' required style='padding:10px'><option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option><option>Débito</option><option>Crédito</option><option>Otro</option></select><br>
+    <button style='margin-top:16px;background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>💾 Registrar venta</button></form>
+    <script>function addItem(){let d=document.querySelector('.item').cloneNode(true);d.querySelectorAll('input').forEach(x=>x.value=x.name==='cantidad'?'1':'');document.getElementById('items').appendChild(d)}</script>
+    """))
+
+@app.get("/venta_comprobante/<int:vid>")
+def venta_comprobante(vid):
+    if not session.get("login"): return redirect("/login")
+    con=db(); cur=con.cursor()
+    cur.execute("SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s",(vid,)); v=cur.fetchone()
+    if not v: con.close(); return redirect("/")
+    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,)); items=cur.fetchall(); con.close()
+    filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in items)
+    base=BASE_URL or request.url_root.rstrip("/"); pub=f"{base}/venta_publica/{v['token_publico']}"
+    wa="https://wa.me/?text="+quote(f"NR Tech - {v['comprobante_numero']}\nTotal: $ {float(v['total']):,.2f}\n{pub}")
+    return html_layout("Venta",card_html(f"""<h2>✅ Venta registrada</h2><p><b>{v['comprobante_numero']}</b></p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2>
+    <div style='display:flex;gap:10px;flex-wrap:wrap'><a target='_blank' href='{wa}' style='background:#16a34a;color:white;padding:11px;text-decoration:none;border-radius:9px'>📲 WhatsApp</a><a target='_blank' href='{pub}' style='background:#2563eb;color:white;padding:11px;text-decoration:none;border-radius:9px'>📄 Ver</a><a target='_blank' href='/venta_imprimir/{vid}' style='background:#334155;color:white;padding:11px;text-decoration:none;border-radius:9px'>🖨️ Imprimir</a></div>
+    <p style='color:#64748b'>Este comprobante ya quedó generado y no se duplica al volver a abrirlo.</p>"""))
+
+@app.get("/venta_publica/<token>")
+def venta_publica(token):
+    con=db(); cur=con.cursor(); cur.execute("SELECT v.*,c.nombre FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE token_publico=%s",(token,)); v=cur.fetchone()
+    if not v: con.close(); return "Comprobante no encontrado",404
+    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(v["id"],)); its=cur.fetchall(); con.close()
+    filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
+    return html_layout("Comprobante",card_html(f"<h2>NR Tech</h2><p><b>{v['comprobante_numero']}</b></p><p>Cliente: {escape(str(v.get('nombre') or 'Consumidor final'))}</p><table style='width:100%'>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p>"))
+
+@app.get("/venta_imprimir/<int:vid>")
+def venta_imprimir(vid):
+    if not session.get("login"): return redirect("/login")
+    con=db(); cur=con.cursor(); cur.execute("SELECT * FROM ventas WHERE id=%s",(vid,)); v=cur.fetchone()
+    if not v: con.close(); return redirect("/")
+    cur.execute("SELECT * FROM venta_items WHERE venta_id=%s ORDER BY id",(vid,)); its=cur.fetchall(); con.close()
+    filas="".join(f"<tr><td>{escape(i['descripcion'])}</td><td>{i['cantidad']}</td><td>$ {float(i['precio_unitario']):,.2f}</td><td>$ {float(i['cantidad'])*float(i['precio_unitario']):,.2f}</td></tr>" for i in its)
+    return f"""<!doctype html><html><head><meta charset='utf-8'><style>body{{font-family:Arial;max-width:760px;margin:25px auto}}table{{width:100%}}td,th{{padding:8px;border-bottom:1px solid #ddd}}@media print{{button{{display:none}}}}</style></head><body><button onclick='window.print()'>🖨️ Imprimir</button><h1>NR Tech</h1><h3>{v['comprobante_numero']}</h3><table>{filas}</table><h2>Total: $ {float(v['total']):,.2f}</h2><p>Pago: {escape(str(v['forma_pago']))}</p></body></html>"""
 
 
 @app.get("/finanzas")
@@ -611,7 +699,17 @@ def finanzas():
         GROUP BY 1 ORDER BY 1
     """, (anio,))
     por_mes = {r['mes']: r for r in cur.fetchall()}
+    cur.execute("SELECT COALESCE(SUM(total),0) total,COALESCE(SUM(costo_total),0) costos,COUNT(*) cantidad FROM ventas WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s",(anio,mes))
+    vm=cur.fetchone() or {}
+    cur.execute("SELECT COALESCE(SUM(total),0) total FROM ventas WHERE EXTRACT(YEAR FROM fecha)=%s",(anio,))
+    va=float((cur.fetchone() or {}).get("total") or 0)
     con.close()
+    mes_data["facturado"]=float(mes_data.get("facturado") or 0)+float(vm.get("total") or 0)
+    mes_data["cobrado"]=float(mes_data.get("cobrado") or 0)+float(vm.get("total") or 0)
+    mes_data["costos"]=float(mes_data.get("costos") or 0)+float(vm.get("costos") or 0)
+    mes_data["margen"]=float(mes_data.get("margen") or 0)+float(vm.get("total") or 0)-float(vm.get("costos") or 0)
+    mes_data["trabajos"]=int(mes_data.get("trabajos") or 0)+int(vm.get("cantidad") or 0)
+    anual += va
 
     def dinero(v):
         try: return f"${float(v or 0):,.0f}".replace(",", ".")
