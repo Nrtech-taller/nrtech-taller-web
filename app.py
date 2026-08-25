@@ -149,6 +149,37 @@ CREATE TABLE IF NOT EXISTS clientes (
         costo_unitario NUMERIC, proveedor TEXT, referencia TEXT, observacion TEXT, fecha TIMESTAMP DEFAULT NOW()
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS proveedores (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        telefono TEXT,
+        email TEXT,
+        direccion TEXT,
+        notas TEXT,
+        activo BOOLEAN DEFAULT TRUE,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS compras_stock (
+        id SERIAL PRIMARY KEY,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+        proveedor_id INTEGER REFERENCES proveedores(id),
+        producto_id INTEGER NOT NULL REFERENCES stock_productos(id),
+        cantidad INTEGER NOT NULL DEFAULT 1,
+        costo_unitario NUMERIC NOT NULL DEFAULT 0,
+        costo_anterior NUMERIC DEFAULT 0,
+        stock_anterior INTEGER DEFAULT 0,
+        stock_nuevo INTEGER DEFAULT 0,
+        referencia TEXT,
+        forma_pago TEXT,
+        observacion TEXT,
+        anulada BOOLEAN DEFAULT FALSE,
+        fecha_alta TIMESTAMP DEFAULT NOW(),
+        fecha_anulacion TIMESTAMP
+    );
+    """)
     cur.execute("""CREATE TABLE IF NOT EXISTS ventas (
       id SERIAL PRIMARY KEY, numero_venta TEXT UNIQUE, cliente_id INTEGER REFERENCES clientes(id),
       fecha TIMESTAMP DEFAULT NOW(), forma_pago TEXT, total NUMERIC DEFAULT 0,
@@ -1463,7 +1494,7 @@ def stock():
         cant=int(x.get("cantidad") or 0); minv=int(x.get("stock_minimo") or 0)
         estado = "<span style='background:#fee2e2;color:#991b1b;padding:5px 9px;border-radius:999px;font-weight:bold'>Sin stock</span>" if cant<=0 else ("<span style='background:#fef3c7;color:#92400e;padding:5px 9px;border-radius:999px;font-weight:bold'>Stock bajo</span>" if cant<=minv else "<span style='background:#dcfce7;color:#166534;padding:5px 9px;border-radius:999px;font-weight:bold'>OK</span>")
         filas+=f"""<tr><td>{escape(str(x.get('codigo') or '-'))}</td><td><b>{escape(str(x.get('nombre') or '-'))}</b><br><small>{escape(str(x.get('marca') or ''))}</small></td><td>{escape(str(x.get('grupo') or '-'))}</td><td>{escape(str(x.get('categoria') or '-'))}</td><td>{escape(str(x.get('modelos_compatibles') or '-'))}</td><td>{cant}</td><td>{minv}</td><td>{estado}</td><td>{escape(str(x.get('ubicacion') or '-'))}</td><td>$ {float(x.get('costo') or 0):,.2f}</td><td>$ {float(x.get('precio_venta') or 0):,.2f}</td><td><a href='/stock/producto/{x["id"]}' style='font-weight:bold;color:#2563eb;margin-right:8px'>Ver</a><a href='/stock/movimiento/{x["id"]}' style='font-weight:bold;color:#16a34a'>Movimiento</a></td></tr>"""
-    return html_layout("Stock",card_html(f"""<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'><div><h2 style='margin:0'>📦 Stock</h2><p style='color:#64748b'>Repuestos, accesorios de venta y artículos/consumibles del taller.</p></div><div><a href='/stock/nuevo' style='background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>➕ Nuevo producto</a> <a href='/stock/alertas' style='background:#f59e0b;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>⚠️ Alertas ({int(resumen.get("bajo") or 0)+int(resumen.get("sin_stock") or 0)})</a> <a href='/stock/movimientos' style='background:#475569;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>📜 Movimientos</a> <a href='/'>🏠 Inicio</a></div></div>
+    return html_layout("Stock",card_html(f"""<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'><div><h2 style='margin:0'>📦 Stock</h2><p style='color:#64748b'>Repuestos, accesorios de venta y artículos/consumibles del taller.</p></div><div><a href='/stock/nuevo' style='background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>➕ Nuevo producto</a> <a href='/stock/compras' style='background:#16a34a;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>🛒 Compras</a> <a href='/proveedores' style='background:#7c3aed;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>🏢 Proveedores</a> <a href='/stock/alertas' style='background:#f59e0b;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>⚠️ Alertas ({int(resumen.get("bajo") or 0)+int(resumen.get("sin_stock") or 0)})</a> <a href='/stock/movimientos' style='background:#475569;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>📜 Movimientos</a> <a href='/'>🏠 Inicio</a></div></div>
     <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:16px 0'><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Productos</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("productos") or 0)}</div></div><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Unidades</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("unidades") or 0)}</div></div><div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Invertido</small><div style='font-size:24px;font-weight:900'>$ {float(resumen.get("inversion") or 0):,.2f}</div></div><div style='background:#fef3c7;padding:14px;border-radius:12px'><small>Stock bajo</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("bajo") or 0)}</div></div><div style='background:#fee2e2;padding:14px;border-radius:12px'><small>Sin stock</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("sin_stock") or 0)}</div></div></div>
     <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px'><select name='grupo' style='padding:9px'><option value=''>Todos los grupos</option><option value='Repuesto' {'selected' if grupo=='Repuesto' else ''}>Repuestos</option><option value='Accesorio' {'selected' if grupo=='Accesorio' else ''}>Accesorios</option><option value='Herramienta / consumible' {'selected' if grupo=='Herramienta / consumible' else ''}>Herramientas / consumibles</option></select><input name='q' value='{escape(q)}' placeholder='Buscar código, producto, modelo, proveedor...' style='padding:9px;min-width:280px'><button style='padding:9px 14px'>Buscar</button></form>
     <div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;min-width:1150px'><tr style='background:#eff6ff'><th>Código</th><th>Producto</th><th>Grupo</th><th>Categoría</th><th>Compatibilidad</th><th>Stock</th><th>Mín.</th><th>Estado</th><th>Ubicación</th><th>Costo</th><th>Venta</th><th></th></tr>{filas or "<tr><td colspan='12' style='padding:18px;text-align:center;color:#64748b'>No hay productos cargados.</td></tr>"}</table></div><style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>"""))
@@ -1550,6 +1581,376 @@ def stock_alertas():
     """))
 
 
+
+@app.route("/proveedores", methods=["GET","POST"])
+def proveedores():
+    if not session.get("login"):
+        return redirect("/login")
+
+    if request.method=="POST":
+        nombre=request.form.get("nombre","").strip()
+        telefono=request.form.get("telefono","").strip()
+        email=request.form.get("email","").strip()
+        direccion=request.form.get("direccion","").strip()
+        notas=request.form.get("notas","").strip()
+        if not nombre:
+            flash("Ingresá el nombre del proveedor.","error")
+            return redirect("/proveedores")
+        con=db();cur=con.cursor()
+        cur.execute("""INSERT INTO proveedores(nombre,telefono,email,direccion,notas)
+                       VALUES(%s,%s,%s,%s,%s)""",
+                    (nombre,telefono,email,direccion,notas))
+        con.commit();con.close()
+        flash("Proveedor agregado correctamente.","success")
+        return redirect("/proveedores")
+
+    q=request.args.get("q","").strip()
+    con=db();cur=con.cursor()
+    sql="""SELECT p.*,
+                  COUNT(c.id) AS compras,
+                  COALESCE(SUM(CASE WHEN c.anulada=FALSE THEN c.cantidad*c.costo_unitario ELSE 0 END),0) AS comprado
+           FROM proveedores p
+           LEFT JOIN compras_stock c ON c.proveedor_id=p.id
+           WHERE p.activo=TRUE"""
+    params=[]
+    if q:
+        like=f"%{q}%"
+        sql+=" AND (p.nombre ILIKE %s OR COALESCE(p.telefono,'') ILIKE %s OR COALESCE(p.email,'') ILIKE %s)"
+        params=[like,like,like]
+    sql+=" GROUP BY p.id ORDER BY p.nombre"
+    cur.execute(sql,tuple(params))
+    provs=cur.fetchall();con.close()
+
+    filas=""
+    for p in provs:
+        filas+=f"""
+        <tr>
+          <td><b>{escape(str(p.get('nombre') or '-'))}</b></td>
+          <td>{escape(str(p.get('telefono') or '-'))}</td>
+          <td>{escape(str(p.get('email') or '-'))}</td>
+          <td>{escape(str(p.get('direccion') or '-'))}</td>
+          <td>{int(p.get('compras') or 0)}</td>
+          <td>$ {float(p.get('comprado') or 0):,.2f}</td>
+          <td>
+            <a href='/proveedores/{int(p["id"])}' style='color:#2563eb;font-weight:bold;margin-right:8px'>Editar</a>
+            <a href='/stock/compras?proveedor_id={int(p["id"])}' style='color:#16a34a;font-weight:bold'>Compras</a>
+          </td>
+        </tr>"""
+
+    return html_layout("Proveedores",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🏢 Proveedores</h2>
+        <p style='color:#64748b;margin:6px 0'>Contactos e historial de compras del taller.</p></div>
+        <div><a href='/stock/compras'>🛒 Compras</a> · <a href='/stock'>← Stock</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <div style='background:#f8fafc;border:1px solid #e5e7eb;padding:14px;border-radius:12px;margin:15px 0'>
+        <h3 style='margin-top:0'>➕ Nuevo proveedor</h3>
+        <form method='post'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px'>
+            <input name='nombre' placeholder='Nombre / empresa' required style='padding:9px'>
+            <input name='telefono' placeholder='Teléfono / WhatsApp' style='padding:9px'>
+            <input name='email' type='email' placeholder='Email' style='padding:9px'>
+            <input name='direccion' placeholder='Dirección' style='padding:9px'>
+          </div>
+          <textarea name='notas' rows='2' placeholder='Notas, horarios, contacto, condiciones...' style='width:100%;padding:9px;margin-top:10px'></textarea>
+          <button style='margin-top:10px;background:#7c3aed;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold'>Guardar proveedor</button>
+        </form>
+      </div>
+
+      <form method='get' style='margin-bottom:12px'>
+        <input name='q' value='{escape(q)}' placeholder='Buscar proveedor...' style='padding:9px;min-width:280px'>
+        <button style='padding:9px 13px'>Buscar</button>
+      </form>
+
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:900px'>
+          <tr style='background:#f5f3ff'><th>Proveedor</th><th>Teléfono</th><th>Email</th><th>Dirección</th><th>Compras</th><th>Total comprado</th><th></th></tr>
+          {filas or "<tr><td colspan='7' style='padding:18px;text-align:center;color:#64748b'>Todavía no hay proveedores cargados.</td></tr>"}
+        </table>
+      </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.route("/proveedores/<int:pid>", methods=["GET","POST"])
+def proveedor_editar(pid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM proveedores WHERE id=%s AND activo=TRUE",(pid,))
+    p=cur.fetchone()
+    if not p:
+        con.close();return redirect("/proveedores")
+
+    if request.method=="POST":
+        nombre=request.form.get("nombre","").strip()
+        if not nombre:
+            con.close();flash("El nombre no puede quedar vacío.","error");return redirect(f"/proveedores/{pid}")
+        cur.execute("""UPDATE proveedores SET nombre=%s,telefono=%s,email=%s,direccion=%s,notas=%s
+                       WHERE id=%s""",
+                    (nombre,request.form.get("telefono","").strip(),request.form.get("email","").strip(),
+                     request.form.get("direccion","").strip(),request.form.get("notas","").strip(),pid))
+        con.commit();con.close()
+        flash("Proveedor actualizado.","success")
+        return redirect("/proveedores")
+
+    con.close()
+    return html_layout("Editar proveedor",card_html(f"""
+      <h2>🏢 Editar proveedor</h2>
+      <form method='post'>
+        <label>Nombre</label><br><input name='nombre' value='{escape(str(p.get("nombre") or ""),quote=True)}' required style='padding:9px;width:100%;max-width:500px'><br><br>
+        <label>Teléfono / WhatsApp</label><br><input name='telefono' value='{escape(str(p.get("telefono") or ""),quote=True)}' style='padding:9px;width:100%;max-width:500px'><br><br>
+        <label>Email</label><br><input name='email' type='email' value='{escape(str(p.get("email") or ""),quote=True)}' style='padding:9px;width:100%;max-width:500px'><br><br>
+        <label>Dirección</label><br><input name='direccion' value='{escape(str(p.get("direccion") or ""),quote=True)}' style='padding:9px;width:100%;max-width:500px'><br><br>
+        <label>Notas</label><br><textarea name='notas' rows='4' style='padding:9px;width:100%;max-width:700px'>{escape(str(p.get("notas") or ""))}</textarea><br>
+        <button style='margin-top:10px'>Guardar cambios</button>
+        <a href='/proveedores' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
+
+
+@app.route("/stock/compras", methods=["GET","POST"])
+def stock_compras():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy=datetime.date.today()
+    if request.method=="POST":
+        try:
+            proveedor_id=int(request.form.get("proveedor_id") or 0)
+            producto_id=int(request.form.get("producto_id") or 0)
+            cantidad=max(1,int(request.form.get("cantidad") or 1))
+            costo_nuevo=float((request.form.get("costo_unitario") or "0").replace(",","."))
+        except Exception:
+            flash("Revisá proveedor, producto, cantidad y costo.","error")
+            return redirect("/stock/compras")
+
+        if proveedor_id<=0 or producto_id<=0 or costo_nuevo<0:
+            flash("Completá proveedor, producto, cantidad y costo correctamente.","error")
+            return redirect("/stock/compras")
+
+        fecha=(request.form.get("fecha") or str(hoy)).strip()
+        referencia=request.form.get("referencia","").strip()
+        forma_pago=request.form.get("forma_pago","").strip()
+        observacion=request.form.get("observacion","").strip()
+
+        con=db();cur=con.cursor()
+        cur.execute("SELECT * FROM proveedores WHERE id=%s AND activo=TRUE",(proveedor_id,))
+        prov=cur.fetchone()
+        cur.execute("SELECT * FROM stock_productos WHERE id=%s AND activo=TRUE FOR UPDATE",(producto_id,))
+        prod=cur.fetchone()
+        if not prov or not prod:
+            con.close();flash("Proveedor o producto no válido.","error");return redirect("/stock/compras")
+
+        anterior=int(prod.get("cantidad") or 0)
+        costo_anterior=float(prod.get("costo") or 0)
+        nueva=anterior+cantidad
+
+        # Costo promedio ponderado para valorar correctamente el Stock existente.
+        if nueva>0:
+            costo_promedio=((anterior*costo_anterior)+(cantidad*costo_nuevo))/nueva
+        else:
+            costo_promedio=costo_nuevo
+
+        cur.execute("""UPDATE stock_productos
+                       SET cantidad=%s,costo=%s,proveedor=%s,fecha_actualizacion=NOW()
+                       WHERE id=%s""",
+                    (nueva,costo_promedio,prov["nombre"],producto_id))
+
+        cur.execute("""INSERT INTO compras_stock
+                       (fecha,proveedor_id,producto_id,cantidad,costo_unitario,costo_anterior,
+                        stock_anterior,stock_nuevo,referencia,forma_pago,observacion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                       RETURNING id""",
+                    (fecha,proveedor_id,producto_id,cantidad,costo_nuevo,costo_anterior,
+                     anterior,nueva,referencia,forma_pago,observacion))
+        compra_id=cur.fetchone()["id"]
+        ref_mov=referencia or f"COMPRA-{compra_id}"
+
+        cur.execute("""INSERT INTO stock_movimientos
+                       (producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                       VALUES(%s,'Entrada compra',%s,%s,%s,%s,%s,%s,%s)""",
+                    (producto_id,cantidad,anterior,nueva,costo_nuevo,prov["nombre"],ref_mov,
+                     observacion or f"Compra registrada #{compra_id}"))
+        con.commit();con.close()
+        flash(f"Compra registrada. Stock: {anterior} → {nueva}.","success")
+        return redirect("/stock/compras")
+
+    try:
+        anio=int(request.args.get("anio",hoy.year))
+        mes=int(request.args.get("mes",hoy.month))
+    except Exception:
+        anio,mes=hoy.year,hoy.month
+    proveedor_f=request.args.get("proveedor_id","").strip()
+
+    con=db();cur=con.cursor()
+    cur.execute("SELECT id,nombre FROM proveedores WHERE activo=TRUE ORDER BY nombre")
+    provs=cur.fetchall()
+    cur.execute("""SELECT id,codigo,nombre,grupo,cantidad,costo
+                   FROM stock_productos WHERE activo=TRUE ORDER BY grupo,nombre""")
+    productos=cur.fetchall()
+
+    sql="""SELECT c.*,p.nombre AS proveedor_nombre,s.codigo,s.nombre AS producto_nombre,s.grupo
+           FROM compras_stock c
+           LEFT JOIN proveedores p ON p.id=c.proveedor_id
+           JOIN stock_productos s ON s.id=c.producto_id
+           WHERE EXTRACT(YEAR FROM c.fecha)=%s AND EXTRACT(MONTH FROM c.fecha)=%s"""
+    params=[anio,mes]
+    if proveedor_f:
+        try:
+            sql+=" AND c.proveedor_id=%s";params.append(int(proveedor_f))
+        except Exception:
+            proveedor_f=""
+    sql+=" ORDER BY c.fecha DESC,c.id DESC"
+    cur.execute(sql,tuple(params))
+    compras=cur.fetchall()
+    con.close()
+
+    total=sum(float(c.get("cantidad") or 0)*float(c.get("costo_unitario") or 0) for c in compras if not c.get("anulada"))
+    unidades=sum(int(c.get("cantidad") or 0) for c in compras if not c.get("anulada"))
+
+    opts_prov="".join(
+        f"<option value='{int(p['id'])}'>{escape(str(p.get('nombre') or '-'))}</option>"
+        for p in provs
+    )
+    opts_prov_f="<option value=''>Todos</option>"+"".join(
+        f"<option value='{int(p['id'])}' {'selected' if proveedor_f==str(p['id']) else ''}>{escape(str(p.get('nombre') or '-'))}</option>"
+        for p in provs
+    )
+    opts_prod="".join(
+        f"<option value='{int(p['id'])}'>{escape(str(p.get('codigo') or '-'))} · {escape(str(p.get('nombre') or '-'))} · stock {int(p.get('cantidad') or 0)} · costo actual $ {float(p.get('costo') or 0):,.2f}</option>"
+        for p in productos
+    )
+    formas=["Efectivo","Transferencia","Débito","Crédito","Mercado Pago","Otro"]
+    opts_forma="".join(f"<option>{escape(x)}</option>" for x in formas)
+
+    nombres=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    opts_m=''.join(f'<option value="{i}" {"selected" if i==mes else ""}>{nombres[i-1]}</option>' for i in range(1,13))
+    opts_a=''.join(f'<option value="{y}" {"selected" if y==anio else ""}>{y}</option>' for y in range(hoy.year-2,hoy.year+2))
+
+    filas=""
+    for c in compras:
+        importe=float(c.get("cantidad") or 0)*float(c.get("costo_unitario") or 0)
+        if c.get("anulada"):
+            estado="<span style='background:#e5e7eb;color:#475569;padding:5px 8px;border-radius:999px;font-weight:bold'>Anulada</span>"
+            accion="-"
+        else:
+            estado="<span style='background:#dcfce7;color:#166534;padding:5px 8px;border-radius:999px;font-weight:bold'>Registrada</span>"
+            accion=f"""<form method='post' action='/stock/compras/{int(c["id"])}/anular' onsubmit="return confirm('¿Anular esta compra y devolver el Stock al estado anterior?')">
+                        <button style='background:#dc2626;color:white;border:0;padding:7px 9px;border-radius:8px'>Anular</button>
+                       </form>"""
+        filas+=f"""
+        <tr>
+          <td>{escape(str(c.get('fecha') or '-'))}</td>
+          <td>{estado}</td>
+          <td>{escape(str(c.get('proveedor_nombre') or '-'))}</td>
+          <td><b>{escape(str(c.get('codigo') or '-'))}</b><br>{escape(str(c.get('producto_nombre') or '-'))}</td>
+          <td>{int(c.get('cantidad') or 0)}</td>
+          <td>$ {float(c.get('costo_unitario') or 0):,.2f}</td>
+          <td><b>$ {importe:,.2f}</b></td>
+          <td>{escape(str(c.get('referencia') or '-'))}</td>
+          <td>{escape(str(c.get('forma_pago') or '-'))}</td>
+          <td>{accion}</td>
+        </tr>"""
+
+    return html_layout("Compras de Stock",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🛒 Compras de Stock</h2>
+        <p style='color:#64748b;margin:6px 0'>Entradas de mercadería vinculadas a proveedores.</p></div>
+        <div><a href='/proveedores'>🏢 Proveedores</a> · <a href='/stock'>← Stock</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <div style='background:#f0fdf4;border:1px solid #86efac;padding:14px;border-radius:12px;margin:15px 0'>
+        <h3 style='margin-top:0'>➕ Registrar compra</h3>
+        {"<div style='background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:9px;margin-bottom:10px'>Primero cargá al menos un <a href='/proveedores'><b>proveedor</b></a> y un producto en Stock.</div>" if not provs or not productos else ""}
+        <form method='post'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px'>
+            <div><label>Fecha</label><br><input type='date' name='fecha' value='{hoy}' required style='width:100%;padding:9px'></div>
+            <div><label>Proveedor</label><br><select name='proveedor_id' required style='width:100%;padding:9px'><option value=''>Elegir...</option>{opts_prov}</select></div>
+            <div><label>Producto</label><br><select name='producto_id' required style='width:100%;padding:9px'><option value=''>Elegir...</option>{opts_prod}</select></div>
+            <div><label>Cantidad</label><br><input type='number' min='1' name='cantidad' value='1' required style='width:100%;padding:9px'></div>
+            <div><label>Costo unitario</label><br><input name='costo_unitario' inputmode='decimal' required placeholder='Ej: 850' style='width:100%;padding:9px'></div>
+            <div><label>Forma de pago</label><br><select name='forma_pago' style='width:100%;padding:9px'><option value=''>Elegir...</option>{opts_forma}</select></div>
+          </div>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:10px;margin-top:10px'>
+            <input name='referencia' placeholder='Factura / pedido / referencia' style='padding:9px'>
+            <input name='observacion' placeholder='Observación' style='padding:9px'>
+          </div>
+          <button style='margin-top:10px;background:#16a34a;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold' {"disabled" if not provs or not productos else ""}>Registrar compra y aumentar Stock</button>
+        </form>
+        <p style='font-size:12px;color:#64748b;margin-bottom:0'>El costo del producto se actualiza usando promedio ponderado entre el Stock existente y la nueva compra.</p>
+      </div>
+
+      <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;align-items:end;background:#f8fafc;padding:12px;border-radius:12px;margin-bottom:14px'>
+        <div><label>Mes</label><br><select name='mes' style='padding:9px'>{opts_m}</select></div>
+        <div><label>Año</label><br><select name='anio' style='padding:9px'>{opts_a}</select></div>
+        <div><label>Proveedor</label><br><select name='proveedor_id' style='padding:9px'>{opts_prov_f}</select></div>
+        <button style='padding:10px 14px'>Filtrar</button>
+      </form>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:14px'>
+        <div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Compras registradas</small><div style='font-size:24px;font-weight:900'>{sum(1 for c in compras if not c.get("anulada"))}</div></div>
+        <div style='background:#f0fdf4;padding:14px;border-radius:12px'><small>Unidades ingresadas</small><div style='font-size:24px;font-weight:900'>{unidades}</div></div>
+        <div style='background:#fff7ed;padding:14px;border-radius:12px'><small>Total comprado</small><div style='font-size:24px;font-weight:900'>$ {total:,.2f}</div></div>
+      </div>
+
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:1150px'>
+          <tr style='background:#f0fdf4'><th>Fecha</th><th>Estado</th><th>Proveedor</th><th>Producto</th><th>Cant.</th><th>Costo unit.</th><th>Total</th><th>Referencia</th><th>Pago</th><th></th></tr>
+          {filas or "<tr><td colspan='10' style='padding:18px;text-align:center;color:#64748b'>No hay compras en este período.</td></tr>"}
+        </table>
+      </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.post("/stock/compras/<int:cid>/anular")
+def stock_compra_anular(cid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT c.*,s.cantidad AS stock_actual,s.costo AS costo_actual,
+                          p.nombre AS proveedor_nombre
+                   FROM compras_stock c
+                   JOIN stock_productos s ON s.id=c.producto_id
+                   LEFT JOIN proveedores p ON p.id=c.proveedor_id
+                   WHERE c.id=%s
+                   FOR UPDATE""",(cid,))
+    c=cur.fetchone()
+    if not c:
+        con.close();flash("La compra no existe.","error");return redirect("/stock/compras")
+    if c.get("anulada"):
+        con.close();flash("Esa compra ya está anulada.","error");return redirect("/stock/compras")
+
+    cantidad=int(c.get("cantidad") or 0)
+    actual=int(c.get("stock_actual") or 0)
+    if actual<cantidad:
+        con.close()
+        flash("No se puede anular porque parte de ese Stock ya fue vendido, usado o retirado.","error")
+        return redirect("/stock/compras")
+
+    nueva=actual-cantidad
+    costo_anterior=float(c.get("costo_anterior") or 0)
+
+    cur.execute("""UPDATE stock_productos
+                   SET cantidad=%s,costo=%s,fecha_actualizacion=NOW()
+                   WHERE id=%s""",
+                (nueva,costo_anterior,c["producto_id"]))
+    cur.execute("""UPDATE compras_stock
+                   SET anulada=TRUE,fecha_anulacion=NOW()
+                   WHERE id=%s""",(cid,))
+    cur.execute("""INSERT INTO stock_movimientos
+                   (producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                   VALUES(%s,'Anulación compra',%s,%s,%s,%s,%s,%s,%s)""",
+                (c["producto_id"],-cantidad,actual,nueva,c.get("costo_unitario") or 0,
+                 c.get("proveedor_nombre"),c.get("referencia") or f"COMPRA-{cid}",
+                 f"Anulación de compra #{cid}"))
+    con.commit();con.close()
+    flash(f"Compra anulada. Stock: {actual} → {nueva}.","success")
+    return redirect("/stock/compras")
+
+
 @app.route("/stock/nuevo",methods=["GET","POST"])
 def stock_nuevo():
     if not session.get("login"): return redirect("/login")
@@ -1590,7 +1991,7 @@ def stock_producto(pid):
         except:minimo=int(p.get("stock_minimo") or 0)
         cur.execute("""UPDATE stock_productos SET nombre=%s,categoria=%s,marca=%s,modelos_compatibles=%s,proveedor=%s,costo=%s,precio_venta=%s,stock_minimo=%s,ubicacion=%s,fecha_actualizacion=NOW() WHERE id=%s""",(request.form.get("nombre","").strip(),request.form.get("categoria","").strip(),request.form.get("marca","").strip(),request.form.get("compatibilidad","").strip(),request.form.get("proveedor","").strip(),costo,precio,minimo,request.form.get("ubicacion","").strip(),pid));con.commit();con.close();flash("Producto actualizado correctamente.","success");return redirect(f"/stock/producto/{pid}")
     cur.execute("SELECT * FROM stock_movimientos WHERE producto_id=%s ORDER BY id DESC LIMIT 20",(pid,));movs=cur.fetchall();con.close();filas="".join(f"<tr><td>{escape(str(m['fecha']))}</td><td>{escape(str(m['tipo']))}</td><td>{m['cantidad']}</td><td>{m.get('cantidad_anterior')}</td><td>{m.get('cantidad_nueva')}</td><td>{escape(str(m.get('referencia') or '-'))}</td></tr>" for m in movs)
-    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><div style='margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb'><a href='/stock/eliminar/{pid}' style='display:inline-block;background:#dc2626;color:white;padding:10px 14px;border-radius:9px;text-decoration:none;font-weight:bold'>🗑️ Eliminar artículo</a><div style='font-size:12px;color:#64748b;margin-top:6px'>Solo se puede eliminar si no fue utilizado en una venta o reparación.</div></div><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
+    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><div style='margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb'><a href='/stock/eliminar/{pid}' style='display:inline-block;background:#dc2626;color:white;padding:10px 14px;border-radius:9px;text-decoration:none;font-weight:bold'>🗑️ Eliminar artículo</a><div style='font-size:12px;color:#64748b;margin-top:6px'>Solo se puede eliminar si no tiene historial de ventas, reparaciones o compras.</div></div><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
 
 @app.route("/stock/eliminar/<int:pid>",methods=["GET","POST"])
 def stock_eliminar(pid):
@@ -1603,12 +2004,13 @@ def stock_eliminar(pid):
     cur.execute("SELECT COUNT(*) n FROM venta_items WHERE stock_producto_id=%s",(pid,));usos=int(cur.fetchone()["n"] or 0)
     cur.execute("SELECT COUNT(*) n FROM orden_repuestos WHERE producto_id=%s",(pid,));usos_rep=int(cur.fetchone()["n"] or 0)
     cur.execute("SELECT COUNT(*) n FROM stock_movimientos WHERE producto_id=%s AND tipo='Venta'",(pid,));ventas_hist=int(cur.fetchone()["n"] or 0)
-    if usos>0 or usos_rep>0 or ventas_hist>0:
+    cur.execute("SELECT COUNT(*) n FROM compras_stock WHERE producto_id=%s",(pid,));compras_hist=int(cur.fetchone()["n"] or 0)
+    if usos>0 or usos_rep>0 or ventas_hist>0 or compras_hist>0:
         con.close()
         return html_layout("No se puede eliminar",card_html(f"""
         <h2 style='color:#b91c1c;margin-top:0'>🔒 No se puede eliminar</h2>
-        <p>El artículo <b>{escape(str(p['codigo']))} — {escape(str(p['nombre']))}</b> ya fue utilizado en una venta o reparación.</p>
-        <p>Para conservar el historial de ventas, reparaciones y movimientos, el sistema no permite borrarlo.</p>
+        <p>El artículo <b>{escape(str(p['codigo']))} — {escape(str(p['nombre']))}</b> ya tiene historial de ventas, reparaciones o compras.</p>
+        <p>Para conservar el historial de ventas, reparaciones, compras y movimientos, el sistema no permite borrarlo.</p>
         <p><a href='/stock/producto/{pid}'>← Volver al artículo</a></p>
         """))
     if request.method=="POST":
