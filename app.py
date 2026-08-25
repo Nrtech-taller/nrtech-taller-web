@@ -156,6 +156,9 @@ CREATE TABLE IF NOT EXISTS clientes (
       garantia_dias INTEGER DEFAULT 30
     );""")
     cur.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS garantia_dias INTEGER DEFAULT 30;")
+    cur.execute("ALTER TABLE ventas ADD COLUMN IF NOT EXISTS cobrado NUMERIC;")
+    # Ventas anteriores a este módulo se consideran ya cobradas, para no generar deudas falsas.
+    cur.execute("UPDATE ventas SET cobrado=total WHERE cobrado IS NULL;")
     cur.execute("""CREATE TABLE IF NOT EXISTS venta_items (
       id SERIAL PRIMARY KEY, venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
       descripcion TEXT NOT NULL, cantidad INTEGER DEFAULT 1,
@@ -228,6 +231,19 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha DATE NOT NULL DEFAULT CURRENT_DATE,
         categoria TEXT NOT NULL,
         descripcion TEXT NOT NULL,
+        monto NUMERIC NOT NULL DEFAULT 0,
+        forma_pago TEXT,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS cobros (
+        id SERIAL PRIMARY KEY,
+        tipo TEXT NOT NULL,
+        orden_id INTEGER REFERENCES ordenes(id) ON DELETE CASCADE,
+        venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
         monto NUMERIC NOT NULL DEFAULT 0,
         forma_pago TEXT,
         observacion TEXT,
@@ -588,6 +604,21 @@ def home():
         LIMIT 5
     """)
     stock_alertas_inicio = cur.fetchall()
+
+    cur.execute("""
+        SELECT
+          COALESCE((
+            SELECT SUM(GREATEST(COALESCE(comprobante_total,presupuesto,0)-COALESCE(cobrado,0),0))
+            FROM ordenes
+            WHERE estado='Entregado'
+          ),0)
+          +
+          COALESCE((
+            SELECT SUM(GREATEST(COALESCE(total,0)-COALESCE(cobrado,0),0))
+            FROM ventas
+          ),0) AS pendiente_total
+    """)
+    cobros_inicio = cur.fetchone() or {}
     con.close()
 
     resumen = {
@@ -606,6 +637,7 @@ def home():
     stock_sin = int(stock_resumen.get("sin_stock") or 0)
     stock_bajo = int(stock_resumen.get("bajo") or 0)
     stock_total_alertas = stock_sin + stock_bajo
+    pendiente_inicio = float(cobros_inicio.get("pendiente_total") or 0)
 
     stock_banner = ""
     if stock_total_alertas:
@@ -636,6 +668,12 @@ def home():
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>En reparación</small><div style="font-size:27px;font-weight:800;">{resumen['En reparación']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Listos</small><div style="font-size:27px;font-weight:800;">{resumen['Listo para retirar']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Entregados</small><div style="font-size:27px;font-weight:800;">{resumen['Entregado']}</div></div>
+      <a href="/finanzas_pendientes" style="text-decoration:none;color:inherit">
+        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:16px;padding:16px;cursor:pointer;">
+          <small>💸 Por cobrar</small>
+          <div style="font-size:27px;font-weight:800;color:#b91c1c;">$ {pendiente_inicio:,.0f}</div>
+        </div>
+      </a>
     </div>
 
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
@@ -664,6 +702,7 @@ def venta_directa():
     if request.method=="POST":
         nombre=request.form.get("nombre","").strip(); tel=request.form.get("telefono","").strip()
         email=request.form.get("email","").strip(); forma=request.form.get("forma_pago","").strip()
+        cobrado_raw=request.form.get("cobrado_inicial","").strip()
         try: garantia_dias=max(0,int(request.form.get("garantia_dias","30") or 30))
         except: garantia_dias=30
 
@@ -725,10 +764,22 @@ def venta_directa():
             if not cid and (nombre or tel or email):
                 cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",(nombre or "Cliente mostrador",tel,email))
                 cid=cur.fetchone()["id"]
+            # Si el campo queda vacío, la venta se considera cobrada completa.
+            if cobrado_raw:
+                try: cobrado_inicial=max(0.0,float(cobrado_raw.replace(",",".")))
+                except Exception: cobrado_inicial=0.0
+                cobrado_inicial=min(cobrado_inicial,total)
+            else:
+                cobrado_inicial=total
+
             token=secrets.token_urlsafe(24)
-            cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico,garantia_dias) VALUES('',%s,%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token,garantia_dias))
+            cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico,garantia_dias,cobrado) VALUES('',%s,%s,%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token,garantia_dias,cobrado_inicial))
             vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-FAC-{datetime.datetime.now().year}-{vid:05d}"
             cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
+            if cobrado_inicial>0:
+                cur.execute("""INSERT INTO cobros(tipo,venta_id,fecha,monto,forma_pago,observacion)
+                               VALUES('Venta',%s,CURRENT_DATE,%s,%s,'Cobro inicial al registrar la venta')""",
+                            (vid,cobrado_inicial,forma))
             for it in items:
                 cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario,stock_producto_id) VALUES(%s,%s,%s,%s,%s,%s)",(vid,*it))
 
@@ -775,7 +826,9 @@ def venta_directa():
     <p style='font-size:13px;color:#64748b'>Los artículos elegidos desde Stock toman su costo real del inventario. El precio de venta se puede ajustar antes de facturar.</p>
     <h3>Pago y garantía</h3>
     <select name='forma_pago' required style='padding:10px;margin-right:8px'><option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option><option>Débito</option><option>Crédito</option><option>Otro</option></select>
+    <input name='cobrado_inicial' inputmode='decimal' placeholder='Cobrado ahora (vacío = total)' style='padding:10px;min-width:220px;margin-right:8px'>
     <select name='garantia_dias' style='padding:10px'><option value='0'>Sin garantía comercial</option><option value='30' selected>Garantía 30 días</option><option value='90'>Garantía 90 días</option><option value='180'>Garantía 180 días</option><option value='365'>Garantía 365 días</option></select><br>
+    <small style='color:#64748b'>Si dejás “Cobrado ahora” vacío, la venta queda como pagada completa. Para una venta a crédito o con seña, ingresá solo lo recibido.</small><br>
     <button style='margin-top:16px;background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>💾 Registrar venta y emitir factura</button></form>
     <script>
     function cargarStock(sel){{
@@ -1002,6 +1055,173 @@ def venta_imprimir(vid):
 
 
 
+@app.route("/cobros/<tipo>/<int:ref_id>", methods=["GET","POST"])
+def cobros_detalle(tipo,ref_id):
+    if not session.get("login"):
+        return redirect("/login")
+    tipo=tipo.lower()
+    if tipo not in ("orden","venta"):
+        return redirect("/finanzas_pendientes")
+
+    con=db();cur=con.cursor()
+    if tipo=="orden":
+        cur.execute("""SELECT o.id,o.numero_orden AS referencia,c.nombre,c.telefono,
+                              COALESCE(o.comprobante_total,o.presupuesto,0) AS total,
+                              COALESCE(o.cobrado,0) AS cobrado
+                       FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+                       WHERE o.id=%s""",(ref_id,))
+    else:
+        cur.execute("""SELECT v.id,v.numero_venta AS referencia,COALESCE(c.nombre,'Consumidor final') AS nombre,c.telefono,
+                              COALESCE(v.total,0) AS total,COALESCE(v.cobrado,v.total,0) AS cobrado
+                       FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id
+                       WHERE v.id=%s""",(ref_id,))
+    obj=cur.fetchone()
+    if not obj:
+        con.close();return redirect("/finanzas_pendientes")
+
+    total=float(obj.get("total") or 0)
+    cobrado=float(obj.get("cobrado") or 0)
+    saldo=max(total-cobrado,0)
+
+    if request.method=="POST":
+        try:monto=float((request.form.get("monto") or "0").replace(",","."))
+        except Exception:monto=0
+        fecha=(request.form.get("fecha") or str(datetime.date.today())).strip()
+        forma=request.form.get("forma_pago","").strip()
+        obs=request.form.get("observacion","").strip()
+
+        if monto<=0:
+            con.close();flash("El pago debe ser mayor a 0.","error");return redirect(f"/cobros/{tipo}/{ref_id}")
+        if saldo<=0:
+            con.close();flash("Esta cuenta ya está pagada.","error");return redirect(f"/cobros/{tipo}/{ref_id}")
+        if monto>saldo+0.0001:
+            con.close();flash(f"El pago supera el saldo pendiente ($ {saldo:,.2f}).","error");return redirect(f"/cobros/{tipo}/{ref_id}")
+
+        if tipo=="orden":
+            cur.execute("SELECT cobrado FROM ordenes WHERE id=%s FOR UPDATE",(ref_id,))
+            actual=float((cur.fetchone() or {}).get("cobrado") or 0)
+            cur.execute("UPDATE ordenes SET cobrado=%s,forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE id=%s",(actual+monto,forma,ref_id))
+            cur.execute("""INSERT INTO cobros(tipo,orden_id,fecha,monto,forma_pago,observacion)
+                           VALUES('Orden',%s,%s,%s,%s,%s)""",(ref_id,fecha,monto,forma,obs))
+        else:
+            cur.execute("SELECT COALESCE(cobrado,total,0) cobrado FROM ventas WHERE id=%s FOR UPDATE",(ref_id,))
+            actual=float((cur.fetchone() or {}).get("cobrado") or 0)
+            cur.execute("UPDATE ventas SET cobrado=%s,forma_pago=COALESCE(NULLIF(%s,''),forma_pago) WHERE id=%s",(actual+monto,forma,ref_id))
+            cur.execute("""INSERT INTO cobros(tipo,venta_id,fecha,monto,forma_pago,observacion)
+                           VALUES('Venta',%s,%s,%s,%s,%s)""",(ref_id,fecha,monto,forma,obs))
+        con.commit();con.close()
+        flash("Pago registrado correctamente.","success")
+        return redirect(f"/cobros/{tipo}/{ref_id}")
+
+    if tipo=="orden":
+        cur.execute("SELECT * FROM cobros WHERE orden_id=%s ORDER BY fecha DESC,id DESC",(ref_id,))
+    else:
+        cur.execute("SELECT * FROM cobros WHERE venta_id=%s ORDER BY fecha DESC,id DESC",(ref_id,))
+    pagos=cur.fetchall();con.close()
+
+    registrado_hist=sum(float(p.get("monto") or 0) for p in pagos)
+    previo=max(cobrado-registrado_hist,0)
+    saldo=max(total-cobrado,0)
+    estado="<span style='background:#dcfce7;color:#166534;padding:6px 10px;border-radius:999px;font-weight:bold'>✅ Pagado</span>" if saldo<=0 else "<span style='background:#fee2e2;color:#991b1b;padding:6px 10px;border-radius:999px;font-weight:bold'>Pendiente</span>"
+
+    formas=["Efectivo","Transferencia","Mercado Pago","Débito","Crédito","Mixto","Otro"]
+    opts_forma="".join(f"<option>{escape(x)}</option>" for x in formas)
+    filas=""
+    for p in pagos:
+        filas+=f"""
+        <tr>
+          <td>{escape(str(p.get('fecha') or '-'))}</td>
+          <td style='font-weight:bold'>$ {float(p.get('monto') or 0):,.2f}</td>
+          <td>{escape(str(p.get('forma_pago') or '-'))}</td>
+          <td>{escape(str(p.get('observacion') or '-'))}</td>
+          <td>
+            <form method='post' action='/cobros/eliminar/{int(p["id"])}' onsubmit="return confirm('¿Eliminar este pago y devolverlo al saldo pendiente?')">
+              <input type='hidden' name='tipo' value='{tipo}'>
+              <input type='hidden' name='ref_id' value='{ref_id}'>
+              <button style='background:#dc2626;color:white;border:0;padding:7px 10px;border-radius:8px'>Eliminar</button>
+            </form>
+          </td>
+        </tr>"""
+
+    aviso_previo=""
+    if previo>0.0001:
+        aviso_previo=f"""<div style='background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:10px;margin:10px 0;color:#78350f'>
+        Cobrado antes de V14.8: <b>$ {previo:,.2f}</b>. Se conserva en el total, aunque no tiene movimientos individuales en este historial.
+        </div>"""
+
+    return html_layout("Pagos",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>💵 Pagos — {escape(str(obj.get("referencia") or "-"))}</h2>
+        <p style='color:#64748b;margin:5px 0'>Cliente: <b>{escape(str(obj.get("nombre") or "-"))}</b> · {escape(str(obj.get("telefono") or ""))}</p></div>
+        <div>{estado} &nbsp; <a href='/finanzas_pendientes'>← Cuentas por cobrar</a></div>
+      </div>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:16px 0'>
+        <div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Total</small><div style='font-size:24px;font-weight:900'>$ {total:,.2f}</div></div>
+        <div style='background:#f0fdf4;padding:14px;border-radius:12px'><small>Cobrado</small><div style='font-size:24px;font-weight:900'>$ {cobrado:,.2f}</div></div>
+        <div style='background:#fef2f2;padding:14px;border-radius:12px'><small>Saldo</small><div style='font-size:24px;font-weight:900;color:#b91c1c'>$ {saldo:,.2f}</div></div>
+      </div>
+
+      {aviso_previo}
+
+      {f"""
+      <form method='post' style='background:#f8fafc;border:1px solid #e5e7eb;padding:14px;border-radius:12px;margin-bottom:16px'>
+        <h3 style='margin-top:0'>Registrar pago</h3>
+        <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px'>
+          <div><label>Fecha</label><br><input type='date' name='fecha' value='{datetime.date.today()}' required style='width:100%;padding:9px'></div>
+          <div><label>Monto</label><br><input name='monto' inputmode='decimal' placeholder='Máximo {saldo:.2f}' required style='width:100%;padding:9px'></div>
+          <div><label>Medio de pago</label><br><select name='forma_pago' style='width:100%;padding:9px'>{opts_forma}</select></div>
+        </div>
+        <div style='margin-top:10px'><label>Observación</label><br><input name='observacion' placeholder='Ej: segunda cuota, seña, saldo final...' style='width:100%;padding:9px'></div>
+        <button style='margin-top:10px;background:#16a34a;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold'>Guardar pago</button>
+      </form>
+      """ if saldo>0 else ""}
+
+      <h3>Historial de pagos</h3>
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:700px'>
+          <tr style='background:#eff6ff'><th>Fecha</th><th>Monto</th><th>Medio</th><th>Observación</th><th></th></tr>
+          {filas or "<tr><td colspan='5' style='padding:18px;text-align:center;color:#64748b'>Todavía no hay movimientos individuales registrados en V14.8.</td></tr>"}
+        </table>
+      </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left}}</style>
+    """))
+
+
+@app.post("/cobros/eliminar/<int:pago_id>")
+def cobros_eliminar(pago_id):
+    if not session.get("login"):
+        return redirect("/login")
+    tipo=request.form.get("tipo","").strip().lower()
+    try:ref_id=int(request.form.get("ref_id") or 0)
+    except Exception:ref_id=0
+
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM cobros WHERE id=%s FOR UPDATE",(pago_id,))
+    p=cur.fetchone()
+    if not p:
+        con.close();return redirect(f"/cobros/{tipo}/{ref_id}" if tipo in ("orden","venta") else "/finanzas_pendientes")
+    monto=float(p.get("monto") or 0)
+
+    if p.get("orden_id"):
+        oid=int(p["orden_id"])
+        cur.execute("SELECT cobrado FROM ordenes WHERE id=%s FOR UPDATE",(oid,))
+        actual=float((cur.fetchone() or {}).get("cobrado") or 0)
+        cur.execute("UPDATE ordenes SET cobrado=GREATEST(%s,0) WHERE id=%s",(actual-monto,oid))
+        tipo="orden";ref_id=oid
+    elif p.get("venta_id"):
+        vid=int(p["venta_id"])
+        cur.execute("SELECT COALESCE(cobrado,total,0) cobrado FROM ventas WHERE id=%s FOR UPDATE",(vid,))
+        actual=float((cur.fetchone() or {}).get("cobrado") or 0)
+        cur.execute("UPDATE ventas SET cobrado=GREATEST(%s,0) WHERE id=%s",(actual-monto,vid))
+        tipo="venta";ref_id=vid
+
+    cur.execute("DELETE FROM cobros WHERE id=%s",(pago_id,))
+    con.commit();con.close()
+    flash("Pago eliminado y saldo corregido.","success")
+    return redirect(f"/cobros/{tipo}/{ref_id}")
+
+
 @app.get("/finanzas_pendientes")
 def finanzas_pendientes():
     if not session.get("login"):
@@ -1014,65 +1234,105 @@ def finanzas_pendientes():
     except Exception:
         anio,mes=hoy.year,hoy.month
 
+    filtrar_periodo = bool(request.args.get("anio") or request.args.get("mes"))
     con=db(); cur=con.cursor()
-    cur.execute("""
-      SELECT o.numero_orden,c.nombre,c.telefono,o.tipo_equipo,o.marca,o.modelo,
+
+    params=[]
+    periodo_orden=""
+    periodo_venta=""
+    if filtrar_periodo:
+        periodo_orden=""" AND COALESCE(o.fecha_entregado,o.fecha_comprobante::date) IS NOT NULL
+                          AND EXTRACT(YEAR FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
+                          AND EXTRACT(MONTH FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s """
+        periodo_venta=" AND EXTRACT(YEAR FROM v.fecha)=%s AND EXTRACT(MONTH FROM v.fecha)=%s "
+
+    sql_o=f"""
+      SELECT o.id,'Reparación' AS tipo,o.numero_orden AS referencia,c.nombre,c.telefono,
+             o.tipo_equipo,o.marca,o.modelo,
              COALESCE(o.comprobante_total,o.presupuesto,0) AS total,
              COALESCE(o.cobrado,0) AS cobrado,
              GREATEST(COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.cobrado,0),0) AS saldo,
-             COALESCE(o.fecha_entregado,o.fecha_comprobante::date) AS fecha
-      FROM ordenes o
-      JOIN clientes c ON c.id=o.cliente_id
+             COALESCE(o.fecha_entregado,o.fecha_comprobante::date,o.fecha_ingreso) AS fecha
+      FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
       WHERE o.estado='Entregado'
-        AND COALESCE(o.fecha_entregado,o.fecha_comprobante::date) IS NOT NULL
-        AND EXTRACT(YEAR FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
-        AND EXTRACT(MONTH FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
-        AND GREATEST(COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.cobrado,0),0) > 0
-      ORDER BY fecha DESC,o.id DESC
-    """,(anio,mes))
-    filas=cur.fetchall(); con.close()
+        AND GREATEST(COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.cobrado,0),0)>0
+        {periodo_orden}
+    """
+    cur.execute(sql_o,(anio,mes) if filtrar_periodo else ())
+    reparaciones=cur.fetchall()
 
+    sql_v=f"""
+      SELECT v.id,'Venta' AS tipo,v.numero_venta AS referencia,
+             COALESCE(c.nombre,'Consumidor final') AS nombre,c.telefono,
+             NULL::text AS tipo_equipo,NULL::text AS marca,NULL::text AS modelo,
+             COALESCE(v.total,0) AS total,
+             COALESCE(v.cobrado,v.total,0) AS cobrado,
+             GREATEST(COALESCE(v.total,0)-COALESCE(v.cobrado,v.total,0),0) AS saldo,
+             v.fecha::date AS fecha
+      FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id
+      WHERE GREATEST(COALESCE(v.total,0)-COALESCE(v.cobrado,v.total,0),0)>0
+        {periodo_venta}
+    """
+    cur.execute(sql_v,(anio,mes) if filtrar_periodo else ())
+    ventas=cur.fetchall()
+    con.close()
+
+    filas=sorted(reparaciones+ventas,key=lambda x:(x.get("fecha") or datetime.date.min),reverse=True)
     total_pendiente=sum(float(r.get("saldo") or 0) for r in filas)
+
     html_filas=""
     for r in filas:
-        equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip() or "-"
+        equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip()
+        detalle=equipo if r.get("tipo")=="Reparación" else "Venta directa"
+        ruta=f"/cobros/orden/{int(r['id'])}" if r.get("tipo")=="Reparación" else f"/cobros/venta/{int(r['id'])}"
         html_filas+=f"""
           <tr>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r.get("fecha") or "-"))}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r["numero_orden"]))}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(r.get("nombre") or "-"))}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(equipo)}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(r.get("total") or 0):,.2f}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(r.get("cobrado") or 0):,.2f}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:#b91c1c'>$ {float(r.get("saldo") or 0):,.2f}</td>
-            <td style='padding:10px;border-bottom:1px solid #e5e7eb'>
-              <a href='/editar?numero={quote(str(r["numero_orden"]))}' style='color:#2563eb;font-weight:bold'>Abrir orden</a>
-            </td>
-          </tr>
-        """
+            <td>{escape(str(r.get("fecha") or "-"))}</td>
+            <td><span style='font-weight:bold'>{escape(str(r.get("tipo") or "-"))}</span></td>
+            <td>{escape(str(r.get("referencia") or "-"))}</td>
+            <td>{escape(str(r.get("nombre") or "-"))}<br><small>{escape(str(r.get("telefono") or ""))}</small></td>
+            <td>{escape(detalle or "-")}</td>
+            <td>$ {float(r.get("total") or 0):,.2f}</td>
+            <td>$ {float(r.get("cobrado") or 0):,.2f}</td>
+            <td style='font-weight:bold;color:#b91c1c'>$ {float(r.get("saldo") or 0):,.2f}</td>
+            <td><a href='{ruta}' style='background:#16a34a;color:white;padding:7px 10px;border-radius:8px;text-decoration:none;font-weight:bold'>💵 Registrar pago</a></td>
+          </tr>"""
 
-    return html_layout("Pendientes de cobro",card_html(f"""
+    nombres=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    opts_m=''.join(f'<option value="{i}" {"selected" if i==mes else ""}>{nombres[i-1]}</option>' for i in range(1,13))
+    opts_a=''.join(f'<option value="{y}" {"selected" if y==anio else ""}>{y}</option>' for y in range(hoy.year-2,hoy.year+2))
+    periodo_txt=f"{nombres[mes-1]} {anio}" if filtrar_periodo else "todos los períodos"
+
+    return html_layout("Cuentas por cobrar",card_html(f"""
       <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
-        <div>
-          <h2 style='margin:0'>💸 Pendientes de cobro</h2>
-          <p style='color:#64748b'>Detalle de órdenes entregadas con saldo pendiente del período {mes:02d}/{anio}.</p>
-        </div>
-        <a href='/finanzas?anio={anio}&mes={mes}' style='font-weight:bold;color:#2563eb'>← Volver a Finanzas</a>
+        <div><h2 style='margin:0'>💸 Cuentas por cobrar</h2>
+        <p style='color:#64748b;margin:5px 0'>Reparaciones y ventas con saldo pendiente — {periodo_txt}.</p></div>
+        <div><a href='/finanzas?anio={anio}&mes={mes}'>← Finanzas</a> · <a href='/'>🏠 Inicio</a></div>
       </div>
+
+      <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;align-items:end;background:#f8fafc;padding:12px;border-radius:12px;margin:15px 0'>
+        <div><label>Mes</label><br><select name='mes' style='padding:9px'>{opts_m}</select></div>
+        <div><label>Año</label><br><select name='anio' style='padding:9px'>{opts_a}</select></div>
+        <button style='padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:9px;font-weight:bold'>Ver período</button>
+        <a href='/finanzas_pendientes' style='padding:10px 14px;text-decoration:none'>Ver todos</a>
+      </form>
+
       <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px;margin:15px 0'>
         <small>Saldo total pendiente</small>
         <div style='font-size:28px;font-weight:900;color:#b91c1c'>$ {total_pendiente:,.2f}</div>
+        <small>{len(filas)} operación/es pendiente/s</small>
       </div>
+
       <div style='overflow-x:auto'>
-        <table style='width:100%;border-collapse:collapse'>
-          <tr style='background:#eff6ff;text-align:left'>
-            <th style='padding:10px'>Fecha</th><th style='padding:10px'>Orden</th><th style='padding:10px'>Cliente</th>
-            <th style='padding:10px'>Equipo</th><th style='padding:10px'>Total</th><th style='padding:10px'>Cobrado</th>
-            <th style='padding:10px'>Saldo</th><th style='padding:10px'></th>
+        <table style='width:100%;min-width:1100px'>
+          <tr style='background:#eff6ff'>
+            <th>Fecha</th><th>Tipo</th><th>Referencia</th><th>Cliente</th><th>Detalle</th>
+            <th>Total</th><th>Cobrado</th><th>Saldo</th><th></th>
           </tr>
-          {html_filas or "<tr><td colspan='8' style='padding:18px;text-align:center;color:#64748b'>No hay saldos pendientes en este período.</td></tr>"}
+          {html_filas or "<tr><td colspan='9' style='padding:18px;text-align:center;color:#166534;font-weight:bold'>✅ No hay saldos pendientes.</td></tr>"}
         </table>
       </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
     """))
 
 
@@ -1083,6 +1343,8 @@ def listar_ventas():
     con=db(); cur=con.cursor()
     cur.execute("""
       SELECT v.id,v.numero_venta,v.fecha,v.forma_pago,v.total,v.costo_total,v.comprobante_numero,
+             COALESCE(v.cobrado,v.total,0) AS cobrado,
+             GREATEST(COALESCE(v.total,0)-COALESCE(v.cobrado,v.total,0),0) AS saldo,
              c.nombre,c.telefono
       FROM ventas v
       LEFT JOIN clientes c ON c.id=v.cliente_id
@@ -1099,9 +1361,12 @@ def listar_ventas():
           <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v['comprobante_numero']))}</td>
           <td style='padding:10px;border-bottom:1px solid #e5e7eb'>{escape(str(v.get('nombre') or 'Consumidor final'))}</td>
           <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(v.get('total') or 0):,.2f}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {float(v.get('cobrado') or 0):,.2f}</td>
+          <td style='padding:10px;border-bottom:1px solid #e5e7eb;font-weight:bold;color:{"#b91c1c" if float(v.get("saldo") or 0)>0 else "#166534"}'>$ {float(v.get('saldo') or 0):,.2f}</td>
           <td style='padding:10px;border-bottom:1px solid #e5e7eb'>$ {gan:,.2f}</td>
           <td style='padding:10px;border-bottom:1px solid #e5e7eb'>
             <a href='/venta_comprobante/{v["id"]}' style='color:#2563eb;font-weight:bold;margin-right:10px'>Ver</a>
+            <a href='/cobros/venta/{v["id"]}' style='color:#16a34a;font-weight:bold;margin-right:10px'>Pagos</a>
             <a href='/eliminar_venta?id={v["id"]}' style='color:#dc2626;font-weight:bold'>Eliminar</a>
           </td>
         </tr>"""
@@ -1114,9 +1379,9 @@ def listar_ventas():
       <table style='width:100%;border-collapse:collapse'>
         <tr style='background:#eff6ff;text-align:left'>
           <th style='padding:10px'>Fecha</th><th style='padding:10px'>Venta</th><th style='padding:10px'>Factura</th>
-          <th style='padding:10px'>Cliente</th><th style='padding:10px'>Total</th><th style='padding:10px'>Ganancia</th><th style='padding:10px'></th>
+          <th style='padding:10px'>Cliente</th><th style='padding:10px'>Total</th><th style='padding:10px'>Cobrado</th><th style='padding:10px'>Saldo</th><th style='padding:10px'>Ganancia</th><th style='padding:10px'></th>
         </tr>
-        {filas or "<tr><td colspan='7' style='padding:18px;text-align:center;color:#64748b'>No hay ventas registradas.</td></tr>"}
+        {filas or "<tr><td colspan='9' style='padding:18px;text-align:center;color:#64748b'>No hay ventas registradas.</td></tr>"}
       </table></div>
       <p style='margin-top:16px'><a href='/'>🏠 Inicio</a></p>
     """))
@@ -1517,7 +1782,13 @@ def finanzas():
         GROUP BY 1 ORDER BY 1
     """, (anio,))
     por_mes = {r['mes']: r for r in cur.fetchall()}
-    cur.execute("SELECT COALESCE(SUM(total),0) total,COALESCE(SUM(costo_total),0) costos,COUNT(*) cantidad FROM ventas WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s",(anio,mes))
+    cur.execute("""SELECT COALESCE(SUM(total),0) total,
+                           COALESCE(SUM(costo_total),0) costos,
+                           COALESCE(SUM(COALESCE(cobrado,total,0)),0) cobrado,
+                           COALESCE(SUM(GREATEST(COALESCE(total,0)-COALESCE(cobrado,total,0),0)),0) pendiente,
+                           COUNT(*) cantidad
+                    FROM ventas
+                    WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s""",(anio,mes))
     vm=cur.fetchone() or {}
     cur.execute("SELECT COALESCE(SUM(total),0) total FROM ventas WHERE EXTRACT(YEAR FROM fecha)=%s",(anio,))
     va=float((cur.fetchone() or {}).get("total") or 0)
@@ -1539,7 +1810,8 @@ def finanzas():
     gastos_por_mes={r["mes"]:r for r in cur.fetchall()}
     con.close()
     mes_data["facturado"]=float(mes_data.get("facturado") or 0)+float(vm.get("total") or 0)
-    mes_data["cobrado"]=float(mes_data.get("cobrado") or 0)+float(vm.get("total") or 0)
+    mes_data["cobrado"]=float(mes_data.get("cobrado") or 0)+float(vm.get("cobrado") or 0)
+    mes_data["pendiente"]=float(mes_data.get("pendiente") or 0)+float(vm.get("pendiente") or 0)
     mes_data["costos"]=float(mes_data.get("costos") or 0)+float(vm.get("costos") or 0)
     mes_data["margen"]=float(mes_data.get("margen") or 0)+float(vm.get("total") or 0)-float(vm.get("costos") or 0)
     mes_data["gastos_generales"]=gastos_mes
@@ -2368,11 +2640,12 @@ def editar():
             <div><small>Presupuesto</small><div style="font-weight:800;font-size:20px;">${val('presupuesto')}</div></div>
             <div><label>Costo repuestos</label><input id="finCosto" name="costo_repuestos" type="number" min="0" step="0.01" value="{val('costo_repuestos')}" oninput="calcularFinanzas()" style="width:100%;padding:9px;box-sizing:border-box;"></div>
             <div><label>Mano de obra</label><input name="mano_obra" type="number" min="0" step="0.01" value="{val('mano_obra')}" style="width:100%;padding:9px;box-sizing:border-box;"></div>
-            <div><label>Cobrado / seña</label><input id="finCobrado" name="cobrado" type="number" min="0" step="0.01" value="{val('cobrado')}" oninput="calcularFinanzas()" style="width:100%;padding:9px;box-sizing:border-box;"></div>
-            <div><label>Forma pago</label><select name="forma_pago" style="width:100%;padding:9px;">{forma_opts}</select></div>
+            <div><label>Cobrado acumulado</label><input id="finCobrado" name="cobrado" type="number" value="{val('cobrado')}" readonly style="width:100%;padding:9px;box-sizing:border-box;background:#f3f4f6;"></div>
+            <div><label>Forma pago principal</label><select name="forma_pago" style="width:100%;padding:9px;">{forma_opts}</select></div>
           </div><input id="finPrecio" type="hidden" value="{val('presupuesto')}"><div style="margin-top:10px;"><strong>Saldo:</strong> <span id="finSaldo"></span> &nbsp; | &nbsp; <strong>Margen:</strong> <span id="finMargen"></span></div></details>
 
           <button type="submit" style="background:#0f766e;color:white;border:0;padding:12px 18px;border-radius:11px;font-weight:800;">Guardar correcciones</button>
+          <a href="/cobros/orden/{x['id']}" style="margin-left:10px;color:#16a34a;font-weight:700;text-decoration:none;">💵 Registrar / ver pagos</a>
           <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:10px;color:#2563eb;font-weight:700;text-decoration:none;">Actualizar reparación</a>
         </form>
         <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;"><a href="/orden/repuestos?numero={val('numero_orden')}" style="background:#16a34a;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🧩 Repuestos usados</a><a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="background:#7c3aed;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🖨️ Etiquetas</a><a href="/ver_ordenes" style="background:#111827;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">📋 Órdenes</a><a href="/" style="background:#e5e7eb;color:#111;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🏠 Inicio</a></div>
