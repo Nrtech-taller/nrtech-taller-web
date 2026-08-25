@@ -222,6 +222,18 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha TIMESTAMP DEFAULT NOW()
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS gastos_taller (
+        id SERIAL PRIMARY KEY,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+        categoria TEXT NOT NULL,
+        descripcion TEXT NOT NULL,
+        monto NUMERIC NOT NULL DEFAULT 0,
+        forma_pago TEXT,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
     # Corrige órdenes antiguas marcadas como Entregado sin fecha de entrega.
     # Si tienen comprobante, usamos su fecha; si no, la fecha actual.
     cur.execute("""
@@ -1509,11 +1521,29 @@ def finanzas():
     vm=cur.fetchone() or {}
     cur.execute("SELECT COALESCE(SUM(total),0) total FROM ventas WHERE EXTRACT(YEAR FROM fecha)=%s",(anio,))
     va=float((cur.fetchone() or {}).get("total") or 0)
+
+    cur.execute("""
+        SELECT COALESCE(SUM(monto),0) AS gastos
+        FROM gastos_taller
+        WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s
+    """,(anio,mes))
+    gastos_mes=float((cur.fetchone() or {}).get("gastos") or 0)
+
+    cur.execute("""
+        SELECT EXTRACT(MONTH FROM fecha)::int AS mes,
+               COALESCE(SUM(monto),0) AS gastos
+        FROM gastos_taller
+        WHERE EXTRACT(YEAR FROM fecha)=%s
+        GROUP BY 1 ORDER BY 1
+    """,(anio,))
+    gastos_por_mes={r["mes"]:r for r in cur.fetchall()}
     con.close()
     mes_data["facturado"]=float(mes_data.get("facturado") or 0)+float(vm.get("total") or 0)
     mes_data["cobrado"]=float(mes_data.get("cobrado") or 0)+float(vm.get("total") or 0)
     mes_data["costos"]=float(mes_data.get("costos") or 0)+float(vm.get("costos") or 0)
     mes_data["margen"]=float(mes_data.get("margen") or 0)+float(vm.get("total") or 0)-float(vm.get("costos") or 0)
+    mes_data["gastos_generales"]=gastos_mes
+    mes_data["ganancia_neta"]=float(mes_data.get("margen") or 0)-gastos_mes
     reparaciones_mes = int(mes_data.get("trabajos") or 0)
     ventas_mes_cantidad = int(vm.get("cantidad") or 0)
     anual += va
@@ -1548,13 +1578,16 @@ def finanzas():
         fact = float(r.get('facturado',0) or 0)+float(v.get('facturado',0) or 0)
         costos = float(r.get('costos',0) or 0)+float(v.get('costos',0) or 0)
         margen = fact-costos
-        filas += f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{nombres[i-1]}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(fact)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(costos)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(margen)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(r.get('trabajos',0) or 0)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(v.get('ventas',0) or 0)}</td></tr>"
+        gastos = float((gastos_por_mes.get(i,{}) or {}).get("gastos",0) or 0)
+        neta = margen-gastos
+        filas += f"<tr><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{nombres[i-1]}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(fact)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(costos)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(margen)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{dinero(gastos)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb;font-weight:bold'>{dinero(neta)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(r.get('trabajos',0) or 0)}</td><td style='padding:10px;border-bottom:1px solid #e5e7eb'>{int(v.get('ventas',0) or 0)}</td></tr>"
 
     contenido = f"""
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
       <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Resumen del período: reparaciones entregadas y ventas directas se muestran por separado, pero ambas integran la facturación total.</p></div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;">
         <a href="/finanzas/detalle?anio={anio}&mes={mes}" style="background:#16a34a;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold;">📊 Ver ganancias por trabajo</a>
+        <a href="/gastos?anio={anio}&mes={mes}" style="background:#ea580c;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold;">🧾 Gastos del taller</a>
         <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;padding:10px 0;">🏠 Inicio</a>
       </div>
     </div>
@@ -1574,7 +1607,11 @@ def finanzas():
           <div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('pendiente'))}</div>
         </div>
       </a>
-      <div style="background:white;border:1px solid #c7d2fe;border-radius:14px;padding:15px;"><small>Ganancia estimada</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('margen'))}</div></div>
+      <div style="background:white;border:1px solid #c7d2fe;border-radius:14px;padding:15px;"><small>Ganancia bruta</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('margen'))}</div></div>
+      <a href="/gastos?anio={anio}&mes={mes}" style="text-decoration:none;color:inherit">
+        <div style="background:white;border:1px solid #fed7aa;border-radius:14px;padding:15px;cursor:pointer;"><small>Gastos generales · ver detalle</small><div style="font-size:24px;font-weight:800;">{dinero(mes_data.get('gastos_generales'))}</div></div>
+      </a>
+      <div style="background:#f0fdf4;border:2px solid #86efac;border-radius:14px;padding:15px;"><small><b>Ganancia neta</b></small><div style="font-size:26px;font-weight:900;color:#166534;">{dinero(mes_data.get('ganancia_neta'))}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>🔧 Reparaciones entregadas</small><div style="font-size:24px;font-weight:800;">{reparaciones_mes}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px;"><small>🛒 Ventas realizadas</small><div style="font-size:24px;font-weight:800;">{ventas_mes_cantidad}</div></div>
     </div>
@@ -1593,10 +1630,182 @@ def finanzas():
 
     <div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:18px;overflow-x:auto;">
       <h3 style="margin-top:0;">Resumen mes a mes — {anio}</h3>
-      <table style="width:100%;border-collapse:collapse;min-width:620px;"><tr style="background:#eff6ff;text-align:left;"><th style="padding:10px">Mes</th><th style="padding:10px">Facturado</th><th style="padding:10px">Costos</th><th style="padding:10px">Ganancia est.</th><th style="padding:10px">Reparaciones</th><th style="padding:10px">Ventas</th></tr>{filas}</table>
+      <table style="width:100%;border-collapse:collapse;min-width:820px;"><tr style="background:#eff6ff;text-align:left;"><th style="padding:10px">Mes</th><th style="padding:10px">Facturado</th><th style="padding:10px">Costo stock</th><th style="padding:10px">Ganancia bruta</th><th style="padding:10px">Gastos</th><th style="padding:10px">Ganancia neta</th><th style="padding:10px">Reparaciones</th><th style="padding:10px">Ventas</th></tr>{filas}</table>
     </div>
     """
     return html_layout("Finanzas", contenido)
+
+
+@app.route("/gastos", methods=["GET","POST"])
+def gastos_taller():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.values.get("anio",hoy.year))
+        mes=int(request.values.get("mes",hoy.month))
+    except Exception:
+        anio,mes=hoy.year,hoy.month
+    if mes<1 or mes>12:
+        mes=hoy.month
+
+    categorias=[
+        "Herramientas / equipamiento",
+        "Publicidad",
+        "Comisiones",
+        "Envíos / traslados",
+        "Software / suscripciones",
+        "Servicios",
+        "Impuestos / trámites",
+        "Mantenimiento",
+        "Otros"
+    ]
+    formas=["Efectivo","Débito","Crédito","Transferencia","Mercado Pago","Otro"]
+
+    if request.method=="POST":
+        fecha=(request.form.get("fecha") or str(hoy)).strip()
+        categoria=request.form.get("categoria","").strip()
+        descripcion=request.form.get("descripcion","").strip()
+        forma=request.form.get("forma_pago","").strip()
+        observacion=request.form.get("observacion","").strip()
+        try:
+            monto=float((request.form.get("monto") or "0").replace(",","."))
+        except Exception:
+            monto=0
+
+        if not categoria or not descripcion or monto<=0:
+            flash("Completá categoría, descripción y un monto mayor a 0.","error")
+            return redirect(f"/gastos?anio={anio}&mes={mes}")
+        if categoria not in categorias:
+            categoria="Otros"
+
+        con=db();cur=con.cursor()
+        cur.execute("""INSERT INTO gastos_taller(fecha,categoria,descripcion,monto,forma_pago,observacion)
+                       VALUES(%s,%s,%s,%s,%s,%s)""",
+                    (fecha,categoria,descripcion,monto,forma,observacion))
+        con.commit();con.close()
+        flash("Gasto registrado correctamente.","success")
+        return redirect(f"/gastos?anio={anio}&mes={mes}")
+
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT * FROM gastos_taller
+                   WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s
+                   ORDER BY fecha DESC,id DESC""",(anio,mes))
+    gastos=cur.fetchall()
+
+    cur.execute("""SELECT categoria,COALESCE(SUM(monto),0) total
+                   FROM gastos_taller
+                   WHERE EXTRACT(YEAR FROM fecha)=%s AND EXTRACT(MONTH FROM fecha)=%s
+                   GROUP BY categoria ORDER BY total DESC""",(anio,mes))
+    por_categoria=cur.fetchall()
+    con.close()
+
+    total=sum(float(g.get("monto") or 0) for g in gastos)
+
+    def dinero(v):
+        try:return f"$ {float(v or 0):,.0f}".replace(",",".")
+        except Exception:return "$ 0"
+
+    nombres=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    opciones_mes=''.join(f'<option value="{i}" {"selected" if i==mes else ""}>{nombres[i-1]}</option>' for i in range(1,13))
+    opciones_anio=''.join(f'<option value="{y}" {"selected" if y==anio else ""}>{y}</option>' for y in range(hoy.year-2,hoy.year+2))
+    opciones_cat=''.join(f"<option value='{escape(c,quote=True)}'>{escape(c)}</option>" for c in categorias)
+    opciones_forma=''.join(f"<option value='{escape(f,quote=True)}'>{escape(f)}</option>" for f in formas)
+
+    filas=""
+    for g in gastos:
+        filas+=f"""
+        <tr>
+          <td>{escape(str(g.get('fecha') or '-'))}</td>
+          <td>{escape(str(g.get('categoria') or '-'))}</td>
+          <td><b>{escape(str(g.get('descripcion') or '-'))}</b>{('<br><small>'+escape(str(g.get('observacion') or ''))+'</small>') if g.get('observacion') else ''}</td>
+          <td>{escape(str(g.get('forma_pago') or '-'))}</td>
+          <td style='font-weight:bold'>{dinero(g.get('monto'))}</td>
+          <td>
+            <form method='post' action='/gastos/eliminar' onsubmit="return confirm('¿Eliminar este gasto?')">
+              <input type='hidden' name='id' value='{int(g["id"])}'>
+              <input type='hidden' name='anio' value='{anio}'>
+              <input type='hidden' name='mes' value='{mes}'>
+              <button style='background:#dc2626;color:white;border:0;padding:7px 10px;border-radius:8px'>Eliminar</button>
+            </form>
+          </td>
+        </tr>"""
+
+    resumen_cat="".join(
+        f"<div style='display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #e5e7eb'><span>{escape(str(x.get('categoria') or '-'))}</span><b>{dinero(x.get('total'))}</b></div>"
+        for x in por_categoria
+    ) or "<div style='color:#64748b'>Sin gastos en este período.</div>"
+
+    return html_layout("Gastos del taller",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🧾 Gastos del taller</h2>
+        <p style='color:#64748b;margin:6px 0'>Gastos generales que se descuentan de la ganancia bruta para obtener la ganancia neta.</p></div>
+        <div><a href='/finanzas?anio={anio}&mes={mes}'>← Finanzas</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <form method='get' style='display:flex;gap:10px;flex-wrap:wrap;align-items:end;background:#f8fafc;padding:12px;border-radius:12px;margin:14px 0'>
+        <div><label>Mes</label><br><select name='mes' style='padding:9px'>{opciones_mes}</select></div>
+        <div><label>Año</label><br><select name='anio' style='padding:9px'>{opciones_anio}</select></div>
+        <button style='padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:9px;font-weight:bold'>Ver período</button>
+      </form>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px'>
+        <div style='background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px'>
+          <small>Total gastos — {nombres[mes-1]} {anio}</small>
+          <div style='font-size:28px;font-weight:900'>{dinero(total)}</div>
+        </div>
+        <div style='background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;padding:16px'>
+          <small>Por categoría</small>{resumen_cat}
+        </div>
+      </div>
+
+      <div style='background:#f0fdf4;border:1px solid #86efac;border-radius:14px;padding:16px;margin-bottom:18px'>
+        <h3 style='margin-top:0'>➕ Registrar gasto</h3>
+        <form method='post'>
+          <input type='hidden' name='anio' value='{anio}'>
+          <input type='hidden' name='mes' value='{mes}'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px'>
+            <div><label>Fecha</label><br><input type='date' name='fecha' value='{hoy}' required style='width:100%;padding:9px'></div>
+            <div><label>Categoría</label><br><select name='categoria' required style='width:100%;padding:9px'><option value=''>Elegir...</option>{opciones_cat}</select></div>
+            <div><label>Monto</label><br><input name='monto' inputmode='decimal' placeholder='Ej: 850' required style='width:100%;padding:9px'></div>
+            <div><label>Forma de pago</label><br><select name='forma_pago' style='width:100%;padding:9px'><option value=''>Elegir...</option>{opciones_forma}</select></div>
+          </div>
+          <div style='margin-top:10px'><label>Descripción</label><br><input name='descripcion' placeholder='Ej: publicidad Instagram, envío, licencia de software...' required style='width:100%;padding:9px'></div>
+          <div style='margin-top:10px'><label>Observación</label><br><textarea name='observacion' rows='2' style='width:100%;padding:9px'></textarea></div>
+          <button style='margin-top:10px;background:#16a34a;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold'>Guardar gasto</button>
+        </form>
+      </div>
+
+      <div style='background:#fffbeb;border:1px solid #f59e0b;border-radius:12px;padding:12px;margin-bottom:14px;color:#78350f'>
+        <b>Importante:</b> no cargues aquí compras de repuestos o accesorios que ingresan a Stock. Ese costo ya se descuenta cuando el artículo se vende o se usa en una reparación.
+      </div>
+
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:850px'>
+          <tr style='background:#fff7ed'><th>Fecha</th><th>Categoría</th><th>Descripción</th><th>Pago</th><th>Monto</th><th></th></tr>
+          {filas or "<tr><td colspan='6' style='padding:18px;text-align:center;color:#64748b'>No hay gastos registrados en este período.</td></tr>"}
+        </table>
+      </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.post("/gastos/eliminar")
+def gastos_eliminar():
+    if not session.get("login"):
+        return redirect("/login")
+    try:
+        gid=int(request.form.get("id") or 0)
+        anio=int(request.form.get("anio") or datetime.date.today().year)
+        mes=int(request.form.get("mes") or datetime.date.today().month)
+    except Exception:
+        return redirect("/gastos")
+    con=db();cur=con.cursor()
+    cur.execute("DELETE FROM gastos_taller WHERE id=%s",(gid,))
+    con.commit();con.close()
+    flash("Gasto eliminado.","success")
+    return redirect(f"/gastos?anio={anio}&mes={mes}")
 
 
 @app.get("/finanzas/detalle")
