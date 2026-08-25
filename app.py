@@ -557,6 +557,25 @@ def home():
         GROUP BY estado
     """)
     estados_raw = cur.fetchall()
+
+    cur.execute("""
+        SELECT
+          COALESCE(SUM(CASE WHEN cantidad<=0 THEN 1 ELSE 0 END),0) AS sin_stock,
+          COALESCE(SUM(CASE WHEN cantidad>0 AND cantidad<=stock_minimo THEN 1 ELSE 0 END),0) AS bajo
+        FROM stock_productos
+        WHERE activo=TRUE
+    """)
+    stock_resumen = cur.fetchone() or {}
+
+    cur.execute("""
+        SELECT id,codigo,nombre,grupo,cantidad,stock_minimo
+        FROM stock_productos
+        WHERE activo=TRUE
+          AND (cantidad<=0 OR (cantidad>0 AND cantidad<=stock_minimo))
+        ORDER BY CASE WHEN cantidad<=0 THEN 0 ELSE 1 END, cantidad ASC, nombre
+        LIMIT 5
+    """)
+    stock_alertas_inicio = cur.fetchall()
     con.close()
 
     resumen = {
@@ -572,7 +591,31 @@ def home():
         if fila["estado"] in resumen:
             resumen[fila["estado"]] = fila["total"]
 
+    stock_sin = int(stock_resumen.get("sin_stock") or 0)
+    stock_bajo = int(stock_resumen.get("bajo") or 0)
+    stock_total_alertas = stock_sin + stock_bajo
+
+    stock_banner = ""
+    if stock_total_alertas:
+        mini = "".join(
+            f"<div style='padding:5px 0;border-bottom:1px solid #fde68a'><b>{escape(str(x.get('codigo') or '-'))}</b> · {escape(str(x.get('nombre') or '-'))} — stock {int(x.get('cantidad') or 0)} / mín. {int(x.get('stock_minimo') or 0)}</div>"
+            for x in stock_alertas_inicio
+        )
+        stock_banner = f"""
+        <div style="background:#fffbeb;border:1px solid #f59e0b;border-radius:16px;padding:16px;margin-bottom:18px;">
+          <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap;">
+            <div>
+              <h3 style="margin:0 0 6px;color:#92400e;">⚠️ Alertas de Stock: {stock_total_alertas}</h3>
+              <div style="color:#92400e;font-size:14px;">Sin stock: <b>{stock_sin}</b> · Stock bajo: <b>{stock_bajo}</b></div>
+              <div style="margin-top:8px;font-size:13px;color:#78350f;">{mini}</div>
+            </div>
+            <a href="/stock/alertas" style="background:#f59e0b;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold;">Ver alertas</a>
+          </div>
+        </div>
+        """
+
     contenido = f"""
+    {stock_banner}
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Recibidos</small><div style="font-size:27px;font-weight:800;">{resumen['Recibido en taller']}</div></div>
       <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Diagnóstico</small><div style="font-size:27px;font-weight:800;">{resumen['En diagnóstico']}</div></div>
@@ -1143,10 +1186,92 @@ def stock():
         cant=int(x.get("cantidad") or 0); minv=int(x.get("stock_minimo") or 0)
         estado = "<span style='background:#fee2e2;color:#991b1b;padding:5px 9px;border-radius:999px;font-weight:bold'>Sin stock</span>" if cant<=0 else ("<span style='background:#fef3c7;color:#92400e;padding:5px 9px;border-radius:999px;font-weight:bold'>Stock bajo</span>" if cant<=minv else "<span style='background:#dcfce7;color:#166534;padding:5px 9px;border-radius:999px;font-weight:bold'>OK</span>")
         filas+=f"""<tr><td>{escape(str(x.get('codigo') or '-'))}</td><td><b>{escape(str(x.get('nombre') or '-'))}</b><br><small>{escape(str(x.get('marca') or ''))}</small></td><td>{escape(str(x.get('grupo') or '-'))}</td><td>{escape(str(x.get('categoria') or '-'))}</td><td>{escape(str(x.get('modelos_compatibles') or '-'))}</td><td>{cant}</td><td>{minv}</td><td>{estado}</td><td>{escape(str(x.get('ubicacion') or '-'))}</td><td>$ {float(x.get('costo') or 0):,.2f}</td><td>$ {float(x.get('precio_venta') or 0):,.2f}</td><td><a href='/stock/producto/{x["id"]}' style='font-weight:bold;color:#2563eb;margin-right:8px'>Ver</a><a href='/stock/movimiento/{x["id"]}' style='font-weight:bold;color:#16a34a'>Movimiento</a></td></tr>"""
-    return html_layout("Stock",card_html(f"""<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'><div><h2 style='margin:0'>📦 Stock</h2><p style='color:#64748b'>Repuestos, accesorios de venta y artículos/consumibles del taller.</p></div><div><a href='/stock/nuevo' style='background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>➕ Nuevo producto</a> <a href='/stock/movimientos' style='background:#475569;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>📜 Movimientos</a> <a href='/'>🏠 Inicio</a></div></div>
+    return html_layout("Stock",card_html(f"""<div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'><div><h2 style='margin:0'>📦 Stock</h2><p style='color:#64748b'>Repuestos, accesorios de venta y artículos/consumibles del taller.</p></div><div><a href='/stock/nuevo' style='background:#2563eb;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>➕ Nuevo producto</a> <a href='/stock/alertas' style='background:#f59e0b;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>⚠️ Alertas ({int(resumen.get("bajo") or 0)+int(resumen.get("sin_stock") or 0)})</a> <a href='/stock/movimientos' style='background:#475569;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold'>📜 Movimientos</a> <a href='/'>🏠 Inicio</a></div></div>
     <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin:16px 0'><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Productos</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("productos") or 0)}</div></div><div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Unidades</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("unidades") or 0)}</div></div><div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Invertido</small><div style='font-size:24px;font-weight:900'>$ {float(resumen.get("inversion") or 0):,.2f}</div></div><div style='background:#fef3c7;padding:14px;border-radius:12px'><small>Stock bajo</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("bajo") or 0)}</div></div><div style='background:#fee2e2;padding:14px;border-radius:12px'><small>Sin stock</small><div style='font-size:24px;font-weight:900'>{int(resumen.get("sin_stock") or 0)}</div></div></div>
     <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:15px'><select name='grupo' style='padding:9px'><option value=''>Todos los grupos</option><option value='Repuesto' {'selected' if grupo=='Repuesto' else ''}>Repuestos</option><option value='Accesorio' {'selected' if grupo=='Accesorio' else ''}>Accesorios</option><option value='Herramienta / consumible' {'selected' if grupo=='Herramienta / consumible' else ''}>Herramientas / consumibles</option></select><input name='q' value='{escape(q)}' placeholder='Buscar código, producto, modelo, proveedor...' style='padding:9px;min-width:280px'><button style='padding:9px 14px'>Buscar</button></form>
     <div style='overflow-x:auto'><table style='width:100%;border-collapse:collapse;min-width:1150px'><tr style='background:#eff6ff'><th>Código</th><th>Producto</th><th>Grupo</th><th>Categoría</th><th>Compatibilidad</th><th>Stock</th><th>Mín.</th><th>Estado</th><th>Ubicación</th><th>Costo</th><th>Venta</th><th></th></tr>{filas or "<tr><td colspan='12' style='padding:18px;text-align:center;color:#64748b'>No hay productos cargados.</td></tr>"}</table></div><style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>"""))
+
+
+@app.get("/stock/alertas")
+def stock_alertas():
+    if not session.get("login"):
+        return redirect("/login")
+
+    con=db(); cur=con.cursor()
+    cur.execute("""
+        SELECT id,codigo,nombre,grupo,categoria,marca,modelos_compatibles,proveedor,
+               cantidad,stock_minimo,ubicacion,costo,precio_venta
+        FROM stock_productos
+        WHERE activo=TRUE
+          AND (cantidad<=0 OR (cantidad>0 AND cantidad<=stock_minimo))
+        ORDER BY CASE WHEN cantidad<=0 THEN 0 ELSE 1 END, cantidad ASC, grupo, nombre
+    """)
+    productos=cur.fetchall()
+    con.close()
+
+    sin_stock=sum(1 for p in productos if int(p.get("cantidad") or 0)<=0)
+    bajo=sum(1 for p in productos if int(p.get("cantidad") or 0)>0)
+    filas=""
+    for p in productos:
+        cant=int(p.get("cantidad") or 0)
+        minimo=int(p.get("stock_minimo") or 0)
+        if cant<=0:
+            estado="<span style='background:#fee2e2;color:#991b1b;padding:5px 9px;border-radius:999px;font-weight:bold'>Sin stock</span>"
+        else:
+            estado="<span style='background:#fef3c7;color:#92400e;padding:5px 9px;border-radius:999px;font-weight:bold'>Stock bajo</span>"
+
+        faltan=max(minimo-cant,0)
+        faltan_txt=str(faltan) if minimo>0 else "Definir mínimo"
+        filas += f"""
+        <tr>
+          <td>{estado}</td>
+          <td><b>{escape(str(p.get('codigo') or '-'))}</b></td>
+          <td><b>{escape(str(p.get('nombre') or '-'))}</b><br><small>{escape(str(p.get('marca') or ''))}</small></td>
+          <td>{escape(str(p.get('grupo') or '-'))}</td>
+          <td>{escape(str(p.get('modelos_compatibles') or '-'))}</td>
+          <td style='font-weight:bold'>{cant}</td>
+          <td>{minimo}</td>
+          <td>{faltan_txt}</td>
+          <td>{escape(str(p.get('proveedor') or '-'))}</td>
+          <td>{escape(str(p.get('ubicacion') or '-'))}</td>
+          <td>
+            <a href='/stock/movimiento/{int(p["id"])}' style='font-weight:bold;color:#16a34a;margin-right:10px'>➕ Entrada</a>
+            <a href='/stock/producto/{int(p["id"])}' style='font-weight:bold;color:#2563eb'>Ver</a>
+          </td>
+        </tr>
+        """
+
+    if not filas:
+        filas="<tr><td colspan='11' style='padding:22px;text-align:center;color:#166534;font-weight:bold'>✅ No hay alertas de Stock.</td></tr>"
+
+    return html_layout("Alertas de Stock",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div>
+          <h2 style='margin:0'>⚠️ Alertas de Stock</h2>
+          <p style='color:#64748b;margin:6px 0'>Artículos agotados o que llegaron al mínimo configurado.</p>
+        </div>
+        <div><a href='/stock'>← Stock</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:16px 0'>
+        <div style='background:#fee2e2;padding:14px;border-radius:12px'><small>Sin stock</small><div style='font-size:26px;font-weight:900'>{sin_stock}</div></div>
+        <div style='background:#fef3c7;padding:14px;border-radius:12px'><small>Stock bajo</small><div style='font-size:26px;font-weight:900'>{bajo}</div></div>
+        <div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Total alertas</small><div style='font-size:26px;font-weight:900'>{sin_stock+bajo}</div></div>
+      </div>
+
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:1150px'>
+          <tr style='background:#fffbeb'>
+            <th>Estado</th><th>Código</th><th>Artículo</th><th>Grupo</th><th>Compatibilidad</th>
+            <th>Stock</th><th>Mín.</th><th>Faltan p/ mín.</th><th>Proveedor</th><th>Ubicación</th><th></th>
+          </tr>
+          {filas}
+        </table>
+      </div>
+      <p style='font-size:12px;color:#64748b;margin-top:12px'>“Faltan p/ mín.” indica cuántas unidades necesitás para volver al mínimo que configuraste. Si el mínimo es 0, podés definirlo entrando en Ver.</p>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
 
 @app.route("/stock/nuevo",methods=["GET","POST"])
 def stock_nuevo():
