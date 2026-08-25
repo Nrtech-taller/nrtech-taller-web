@@ -751,12 +751,15 @@ CREATE TABLE IF NOT EXISTS clientes (
         cuotas_total INTEGER,
         cuota_actual INTEGER,
         saldo_deuda NUMERIC,
+        frecuencia_meses INTEGER NOT NULL DEFAULT 1,
         incluir_proyeccion BOOLEAN NOT NULL DEFAULT TRUE,
         activa BOOLEAN NOT NULL DEFAULT TRUE,
         observacion TEXT,
         fecha_alta TIMESTAMP DEFAULT NOW()
     );
     """)
+    # Compatibilidad con bases creadas antes de V16.1.
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS frecuencia_meses INTEGER NOT NULL DEFAULT 1;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pf_ingresos_recurrentes (
@@ -6482,23 +6485,60 @@ def _pf_account_options(cuentas, moneda):
     )
 
 
+def _pf_obligation_applies(o, anio, mes):
+    """Devuelve True si una obligación corresponde al mes indicado según su frecuencia."""
+    if o.get("tipo")=="Deuda sin fecha":
+        return False
+    objetivo=datetime.date(anio,mes,1)
+    _,fin_obj=_pf_month_bounds(anio,mes)
+    fi=o.get("fecha_inicio")
+    ff=o.get("fecha_fin")
+    if fi and fi>fin_obj:
+        return False
+    if ff and ff<objetivo:
+        return False
+    try:
+        frecuencia=max(1,int(o.get("frecuencia_meses") or 1))
+    except Exception:
+        frecuencia=1
+    if frecuencia==1:
+        return True
+    # Para una frecuencia mayor a mensual necesitamos un mes de referencia real.
+    if not fi:
+        return False
+    diferencia=(anio-fi.year)*12+(mes-fi.month)
+    return diferencia>=0 and diferencia%frecuencia==0
+
+
+def _pf_frequency_label(meses):
+    try:
+        n=max(1,int(meses or 1))
+    except Exception:
+        n=1
+    return {1:"Mensual",2:"Bimestral",3:"Trimestral",6:"Semestral",12:"Anual"}.get(n,f"Cada {n} meses")
+
+
 def _pf_projection_month(cur, anio, mes):
     inicio,fin=_pf_month_bounds(anio,mes)
     periodo=inicio
     cur.execute("""
-      SELECT o.moneda,COALESCE(SUM(o.monto),0) total
+      SELECT o.*
       FROM pf_obligaciones o
       WHERE o.activa=TRUE AND o.incluir_proyeccion=TRUE
         AND o.tipo<>'Deuda sin fecha'
         AND (o.fecha_inicio IS NULL OR o.fecha_inicio<=%s)
         AND (o.fecha_fin IS NULL OR o.fecha_fin>=%s)
-        AND NOT EXISTS (
-          SELECT 1 FROM pf_pagos_obligaciones p
-          WHERE p.obligacion_id=o.id AND p.periodo=%s
-        )
-      GROUP BY o.moneda
-    """,(fin,inicio,periodo))
-    obligaciones={r["moneda"]:float(r["total"] or 0) for r in cur.fetchall()}
+    """,(fin,inicio))
+    obligaciones={"UYU":0.0,"USD":0.0}
+    candidatas=[o for o in cur.fetchall() if _pf_obligation_applies(o,anio,mes)]
+    pagadas=set()
+    if candidatas:
+        ids=[o["id"] for o in candidatas]
+        cur.execute("SELECT obligacion_id FROM pf_pagos_obligaciones WHERE periodo=%s AND obligacion_id=ANY(%s)",(periodo,ids))
+        pagadas={r["obligacion_id"] for r in cur.fetchall()}
+    for o in candidatas:
+        if o["id"] not in pagadas:
+            obligaciones[o["moneda"]]=obligaciones.get(o["moneda"],0)+float(o["monto"] or 0)
 
     cur.execute("""
       SELECT pc.moneda,COALESCE(SUM(c.monto),0) total
@@ -6624,7 +6664,7 @@ def personal_inicio():
     proximos=[]
     limite=hoy+datetime.timedelta(days=45)
     cur.execute("""
-      SELECT id,concepto,tipo,monto,moneda,dia_vencimiento,fecha_inicio,fecha_fin
+      SELECT id,concepto,tipo,monto,moneda,dia_vencimiento,fecha_inicio,fecha_fin,frecuencia_meses
       FROM pf_obligaciones WHERE activa=TRUE AND tipo<>'Deuda sin fecha'
       ORDER BY concepto
     """)
@@ -6634,6 +6674,7 @@ def personal_inicio():
             _,mf=_pf_month_bounds(m.year,m.month)
             if o["fecha_inicio"] and o["fecha_inicio"]>mf:continue
             if o["fecha_fin"] and o["fecha_fin"]<m:continue
+            if not _pf_obligation_applies(o,m.year,m.month):continue
             due=_pf_safe_date(m.year,m.month,o["dia_vencimiento"] or 1)
             if hoy<=due<=limite:
                 proximos.append((due,o["concepto"],float(o["monto"] or 0),o["moneda"],"Obligación"))
@@ -7157,15 +7198,21 @@ def personal_obligaciones():
         except Exception:ct=None
         try:ca=int(request.form.get("cuota_actual") or 0) or None
         except Exception:ca=None
+        try:frecuencia=max(1,int(request.form.get("frecuencia_meses") or 1))
+        except Exception:frecuencia=1
         fi=request.form.get("fecha_inicio") or None; ff=request.form.get("fecha_fin") or None
         incluir=request.form.get("incluir_proyeccion")=="1"
         if not concepto or tipo not in ("Fijo","Cuota","Deuda sin fecha") or moneda not in ("UYU","USD") or monto<0:
             con.close();flash("Revisá los datos de la obligación.","error");return redirect("/personal/obligaciones")
         if tipo=="Deuda sin fecha":incluir=False
+        if frecuencia not in (1,2,3,6,12):
+            con.close();flash("Elegí una frecuencia válida.","error");return redirect("/personal/obligaciones")
+        if frecuencia>1 and tipo!="Deuda sin fecha" and not fi:
+            con.close();flash("Para una obligación no mensual indicá la fecha de inicio del ciclo.","error");return redirect("/personal/obligaciones")
         cur.execute("""INSERT INTO pf_obligaciones(concepto,tipo,categoria,monto,moneda,dia_vencimiento,
-                       fecha_inicio,fecha_fin,cuotas_total,cuota_actual,saldo_deuda,incluir_proyeccion,observacion)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (concepto,tipo,categoria,monto,moneda,dia,fi,ff,ct,ca,saldo,incluir,obs))
+                       fecha_inicio,fecha_fin,cuotas_total,cuota_actual,saldo_deuda,frecuencia_meses,incluir_proyeccion,observacion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (concepto,tipo,categoria,monto,moneda,dia,fi,ff,ct,ca,saldo,frecuencia,incluir,obs))
         con.commit();flash("Obligación agregada.","success")
     cur.execute("SELECT * FROM pf_obligaciones WHERE activa=TRUE ORDER BY tipo,concepto")
     obligaciones=cur.fetchall()
@@ -7178,9 +7225,9 @@ def personal_obligaciones():
         saldo=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "-"
         cuota=f"{o.get('cuota_actual') or '-'}/{o.get('cuotas_total') or '-'}" if o["tipo"]=="Cuota" else "-"
         filas+=f"""<tr><td><b>{escape(o['concepto'])}</b><br><small>{escape(o['tipo'])}</small></td>
-          <td>{_pf_money(o['monto'],o['moneda'])}</td><td>{escape(venc)}</td><td>{cuota}</td>
+          <td>{_pf_money(o['monto'],o['moneda'])}</td><td>{escape(venc)}</td><td>{escape(_pf_frequency_label(o.get('frecuencia_meses')))}</td><td>{cuota}</td>
           <td>{saldo}</td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
-    if not filas:filas="<tr><td colspan='6'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
+    if not filas:filas="<tr><td colspan='7'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
     ingresos_filas="".join(
         f"""<tr><td><b>{escape(i['concepto'])}</b></td><td>{_pf_money(i['monto'],i['moneda'])}</td>
         <td>{'Día '+str(i['dia_cobro']) if i.get('dia_cobro') else 'A definir'}</td>
@@ -7199,6 +7246,7 @@ def personal_obligaciones():
           <div><label>Monto mensual/cuota</label><input name='monto' inputmode='decimal' value='0' style='width:100%;padding:9px'></div>
           <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
           <div><label>Día vencimiento</label><input name='dia_vencimiento' type='number' min='1' max='31' style='width:100%;padding:9px'></div>
+          <div><label>Frecuencia</label><select name='frecuencia_meses' style='width:100%;padding:9px'><option value='1'>Mensual</option><option value='2'>Bimestral</option><option value='3'>Trimestral</option><option value='6'>Semestral</option><option value='12'>Anual</option></select></div>
           <div><label>Saldo total deuda</label><input name='saldo_deuda' inputmode='decimal' placeholder='Solo si lo conocemos' style='width:100%;padding:9px'></div>
           <div><label>Cuotas total</label><input name='cuotas_total' type='number' min='1' style='width:100%;padding:9px'></div>
           <div><label>Cuota actual</label><input name='cuota_actual' type='number' min='1' style='width:100%;padding:9px'></div>
@@ -7209,7 +7257,7 @@ def personal_obligaciones():
         <textarea name='observacion' rows='2' placeholder='Nota opcional' style='width:100%;padding:9px;margin-top:8px'></textarea>
         <button style='margin-top:9px;background:#2563eb;color:white;border:0;padding:10px 14px'>Agregar</button>
       </form>
-      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Concepto</th><th>Monto</th><th>Vence</th><th>Cuota</th><th>Saldo deuda</th><th>Proyecta</th></tr>{filas}</table></div>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Concepto</th><th>Monto</th><th>Vence</th><th>Frecuencia</th><th>Cuota</th><th>Saldo deuda</th><th>Proyecta</th></tr>{filas}</table></div>
     """)}
     <div id='ingresos' style='margin-top:12px'>
       {card_html(f"""
@@ -7265,7 +7313,7 @@ def personal_proximos():
         AND (o.activa=TRUE OR p.id IS NOT NULL)
       ORDER BY o.dia_vencimiento NULLS LAST,o.concepto
     """,(inicio,fin,inicio))
-    obs=cur.fetchall()
+    obs=[o for o in cur.fetchall() if _pf_obligation_applies(o,base.year,base.month)]
     cur.execute("""
       SELECT c.*,pc.descripcion,pc.moneda,pc.cuotas_total,t.nombre tarjeta
       FROM pf_cuotas c
@@ -7305,7 +7353,7 @@ def personal_proximos():
               <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
               <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
             </form>"""
-        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'])}</strong></div>"""
+        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {escape(_pf_frequency_label(o.get('frecuencia_meses')))} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'])}</strong></div>"""
 
     for q in cuotas:
         pagada=q.get("estado")=="Pagada"
