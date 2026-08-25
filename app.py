@@ -1553,7 +1553,10 @@ def finanzas():
     contenido = f"""
     <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
       <div><h2 style="margin:0;">💰 Finanzas</h2><p style="margin:5px 0 0;color:#64748b;">Resumen del período: reparaciones entregadas y ventas directas se muestran por separado, pero ambas integran la facturación total.</p></div>
-      <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;">🏠 Inicio</a>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;">
+        <a href="/finanzas/detalle?anio={anio}&mes={mes}" style="background:#16a34a;color:white;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:bold;">📊 Ver ganancias por trabajo</a>
+        <a href="/" style="text-decoration:none;font-weight:bold;color:#2563eb;padding:10px 0;">🏠 Inicio</a>
+      </div>
     </div>
     <form method="get" style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:14px;margin-bottom:16px;display:flex;gap:10px;flex-wrap:wrap;align-items:end;">
       <div><label>Mes</label><br><select name="mes" style="padding:9px;border:1px solid #d1d5db;border-radius:9px;">{opciones_mes}</select></div>
@@ -1594,6 +1597,188 @@ def finanzas():
     </div>
     """
     return html_layout("Finanzas", contenido)
+
+
+@app.get("/finanzas/detalle")
+def finanzas_detalle():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.args.get("anio",hoy.year))
+        mes=int(request.args.get("mes",hoy.month))
+    except Exception:
+        anio,mes=hoy.year,hoy.month
+    if mes<1 or mes>12:
+        mes=hoy.month
+
+    tipo=request.args.get("tipo","todos").strip().lower()
+    if tipo not in ("todos","reparaciones","ventas"):
+        tipo="todos"
+
+    con=db();cur=con.cursor()
+    reparaciones=[]
+    ventas_det=[]
+
+    if tipo in ("todos","reparaciones"):
+        cur.execute("""
+            SELECT o.numero_orden,
+                   COALESCE(o.fecha_entregado,o.fecha_comprobante::date) AS fecha,
+                   c.nombre AS cliente,
+                   o.tipo_equipo,o.marca,o.modelo,
+                   COALESCE(o.comprobante_total,o.presupuesto,0) AS ingreso,
+                   COALESCE(o.costo_repuestos,0) AS costo,
+                   COALESCE(o.comprobante_total,o.presupuesto,0)-COALESCE(o.costo_repuestos,0) AS ganancia,
+                   COALESCE(o.cobrado,0) AS cobrado
+            FROM ordenes o
+            JOIN clientes c ON c.id=o.cliente_id
+            WHERE o.estado='Entregado'
+              AND COALESCE(o.fecha_entregado,o.fecha_comprobante::date) IS NOT NULL
+              AND EXTRACT(YEAR FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
+              AND EXTRACT(MONTH FROM COALESCE(o.fecha_entregado,o.fecha_comprobante::date))=%s
+            ORDER BY fecha DESC,o.numero_orden DESC
+        """,(anio,mes))
+        reparaciones=cur.fetchall()
+
+    if tipo in ("todos","ventas"):
+        cur.execute("""
+            SELECT v.id,v.numero_venta,v.fecha,COALESCE(c.nombre,'Consumidor final') AS cliente,
+                   COALESCE(v.total,0) AS ingreso,
+                   COALESCE(v.costo_total,0) AS costo,
+                   COALESCE(v.total,0)-COALESCE(v.costo_total,0) AS ganancia
+            FROM ventas v
+            LEFT JOIN clientes c ON c.id=v.cliente_id
+            WHERE EXTRACT(YEAR FROM v.fecha)=%s
+              AND EXTRACT(MONTH FROM v.fecha)=%s
+            ORDER BY v.fecha DESC,v.id DESC
+        """,(anio,mes))
+        ventas_det=cur.fetchall()
+    con.close()
+
+    def dinero(v):
+        try:return f"$ {float(v or 0):,.0f}".replace(",",".")
+        except Exception:return "$ 0"
+
+    total_ing_rep=sum(float(x.get("ingreso") or 0) for x in reparaciones)
+    total_cos_rep=sum(float(x.get("costo") or 0) for x in reparaciones)
+    total_gan_rep=sum(float(x.get("ganancia") or 0) for x in reparaciones)
+
+    total_ing_ven=sum(float(x.get("ingreso") or 0) for x in ventas_det)
+    total_cos_ven=sum(float(x.get("costo") or 0) for x in ventas_det)
+    total_gan_ven=sum(float(x.get("ganancia") or 0) for x in ventas_det)
+
+    total_ing=total_ing_rep+total_ing_ven
+    total_cos=total_cos_rep+total_cos_ven
+    total_gan=total_gan_rep+total_gan_ven
+    margen_pct=(total_gan/total_ing*100) if total_ing else 0
+
+    filas_rep=""
+    for r in reparaciones:
+        ingreso=float(r.get("ingreso") or 0)
+        costo=float(r.get("costo") or 0)
+        gan=float(r.get("ganancia") or 0)
+        pct=(gan/ingreso*100) if ingreso else 0
+        equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip()
+        color="#166534" if gan>=0 else "#991b1b"
+        filas_rep+=f"""
+        <tr>
+          <td>{escape(str(r.get('fecha') or '-'))}</td>
+          <td><a href='/editar?numero={escape(str(r.get("numero_orden") or ""),quote=True)}' style='font-weight:bold;color:#2563eb'>{escape(str(r.get('numero_orden') or '-'))}</a></td>
+          <td>{escape(str(r.get('cliente') or '-'))}</td>
+          <td>{escape(equipo or '-')}</td>
+          <td>{dinero(ingreso)}</td>
+          <td>{dinero(costo)}</td>
+          <td style='font-weight:bold;color:{color}'>{dinero(gan)}</td>
+          <td>{pct:.1f}%</td>
+          <td>{dinero(r.get('cobrado'))}</td>
+        </tr>"""
+
+    filas_ven=""
+    for v in ventas_det:
+        ingreso=float(v.get("ingreso") or 0)
+        costo=float(v.get("costo") or 0)
+        gan=float(v.get("ganancia") or 0)
+        pct=(gan/ingreso*100) if ingreso else 0
+        color="#166534" if gan>=0 else "#991b1b"
+        filas_ven+=f"""
+        <tr>
+          <td>{escape(str(v.get('fecha') or '-'))}</td>
+          <td><a href='/venta/{int(v["id"])}' style='font-weight:bold;color:#2563eb'>{escape(str(v.get('numero_venta') or '-'))}</a></td>
+          <td>{escape(str(v.get('cliente') or '-'))}</td>
+          <td>{dinero(ingreso)}</td>
+          <td>{dinero(costo)}</td>
+          <td style='font-weight:bold;color:{color}'>{dinero(gan)}</td>
+          <td>{pct:.1f}%</td>
+        </tr>"""
+
+    nombres=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Setiembre","Octubre","Noviembre","Diciembre"]
+    opciones_mes=''.join(f'<option value="{i}" {"selected" if i==mes else ""}>{nombres[i-1]}</option>' for i in range(1,13))
+    opciones_anio=''.join(f'<option value="{y}" {"selected" if y==anio else ""}>{y}</option>' for y in range(hoy.year-2,hoy.year+2))
+    opciones_tipo=f"""
+      <option value="todos" {'selected' if tipo=='todos' else ''}>Todo</option>
+      <option value="reparaciones" {'selected' if tipo=='reparaciones' else ''}>Solo reparaciones</option>
+      <option value="ventas" {'selected' if tipo=='ventas' else ''}>Solo ventas</option>
+    """
+
+    bloque_rep=""
+    if tipo in ("todos","reparaciones"):
+        bloque_rep=f"""
+        <div style='background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;margin-bottom:18px;overflow-x:auto'>
+          <h3 style='margin-top:0'>🔧 Reparaciones</h3>
+          <table style='width:100%;min-width:1000px'>
+            <tr style='background:#eff6ff'>
+              <th>Fecha</th><th>Orden</th><th>Cliente</th><th>Equipo</th><th>Ingreso</th><th>Costo repuestos</th><th>Ganancia</th><th>Margen</th><th>Cobrado</th>
+            </tr>
+            {filas_rep or "<tr><td colspan='9' style='padding:18px;text-align:center;color:#64748b'>No hay reparaciones entregadas en este período.</td></tr>"}
+          </table>
+        </div>"""
+
+    bloque_ven=""
+    if tipo in ("todos","ventas"):
+        bloque_ven=f"""
+        <div style='background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;overflow-x:auto'>
+          <h3 style='margin-top:0'>🛒 Ventas</h3>
+          <table style='width:100%;min-width:800px'>
+            <tr style='background:#f0fdf4'>
+              <th>Fecha</th><th>Venta</th><th>Cliente</th><th>Ingreso</th><th>Costo</th><th>Ganancia</th><th>Margen</th>
+            </tr>
+            {filas_ven or "<tr><td colspan='7' style='padding:18px;text-align:center;color:#64748b'>No hay ventas en este período.</td></tr>"}
+          </table>
+        </div>"""
+
+    return html_layout("Ganancias por trabajo",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap'>
+        <div>
+          <h2 style='margin:0'>📊 Ganancias por trabajo</h2>
+          <p style='color:#64748b;margin:6px 0'>Detalle de ingresos, costo de artículos/repuestos y margen de cada operación.</p>
+        </div>
+        <div><a href='/finanzas?anio={anio}&mes={mes}'>← Finanzas</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <form method='get' style='display:flex;gap:10px;flex-wrap:wrap;align-items:end;background:#f8fafc;padding:14px;border-radius:12px;margin:16px 0'>
+        <div><label>Mes</label><br><select name='mes' style='padding:9px'>{opciones_mes}</select></div>
+        <div><label>Año</label><br><select name='anio' style='padding:9px'>{opciones_anio}</select></div>
+        <div><label>Mostrar</label><br><select name='tipo' style='padding:9px'>{opciones_tipo}</select></div>
+        <button style='padding:10px 14px;background:#2563eb;color:white;border:0;border-radius:9px;font-weight:bold'>Aplicar</button>
+      </form>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-bottom:18px'>
+        <div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Ingresos</small><div style='font-size:24px;font-weight:900'>{dinero(total_ing)}</div></div>
+        <div style='background:#fff7ed;padding:14px;border-radius:12px'><small>Costos</small><div style='font-size:24px;font-weight:900'>{dinero(total_cos)}</div></div>
+        <div style='background:#f0fdf4;padding:14px;border-radius:12px'><small>Ganancia bruta</small><div style='font-size:24px;font-weight:900'>{dinero(total_gan)}</div></div>
+        <div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Margen promedio</small><div style='font-size:24px;font-weight:900'>{margen_pct:.1f}%</div></div>
+        <div style='background:#f8fafc;padding:14px;border-radius:12px'><small>Operaciones</small><div style='font-size:24px;font-weight:900'>{len(reparaciones)+len(ventas_det)}</div></div>
+      </div>
+
+      {bloque_rep}
+      {bloque_ven}
+
+      <p style='font-size:12px;color:#64748b;margin-top:14px'>
+        Ganancia bruta = ingreso − costo registrado de repuestos/artículos. No descuenta todavía otros gastos generales del taller.
+      </p>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
 
 
 @app.route("/crear", methods=["GET", "POST"])
