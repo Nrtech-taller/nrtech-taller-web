@@ -211,6 +211,17 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_forma_pago TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_total NUMERIC;")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS orden_repuestos (
+        id SERIAL PRIMARY KEY,
+        orden_id INTEGER NOT NULL REFERENCES ordenes(id) ON DELETE CASCADE,
+        producto_id INTEGER NOT NULL REFERENCES stock_productos(id),
+        cantidad INTEGER NOT NULL DEFAULT 1,
+        costo_unitario NUMERIC DEFAULT 0,
+        fecha TIMESTAMP DEFAULT NOW()
+    );
+    """)
     # Corrige órdenes antiguas marcadas como Entregado sin fecha de entrega.
     # Si tienen comprobante, usamos su fecha; si no, la fecha actual.
     cur.execute("""
@@ -1177,7 +1188,7 @@ def stock_producto(pid):
         except:minimo=int(p.get("stock_minimo") or 0)
         cur.execute("""UPDATE stock_productos SET nombre=%s,categoria=%s,marca=%s,modelos_compatibles=%s,proveedor=%s,costo=%s,precio_venta=%s,stock_minimo=%s,ubicacion=%s,fecha_actualizacion=NOW() WHERE id=%s""",(request.form.get("nombre","").strip(),request.form.get("categoria","").strip(),request.form.get("marca","").strip(),request.form.get("compatibilidad","").strip(),request.form.get("proveedor","").strip(),costo,precio,minimo,request.form.get("ubicacion","").strip(),pid));con.commit();con.close();flash("Producto actualizado correctamente.","success");return redirect(f"/stock/producto/{pid}")
     cur.execute("SELECT * FROM stock_movimientos WHERE producto_id=%s ORDER BY id DESC LIMIT 20",(pid,));movs=cur.fetchall();con.close();filas="".join(f"<tr><td>{escape(str(m['fecha']))}</td><td>{escape(str(m['tipo']))}</td><td>{m['cantidad']}</td><td>{m.get('cantidad_anterior')}</td><td>{m.get('cantidad_nueva')}</td><td>{escape(str(m.get('referencia') or '-'))}</td></tr>" for m in movs)
-    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><div style='margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb'><a href='/stock/eliminar/{pid}' style='display:inline-block;background:#dc2626;color:white;padding:10px 14px;border-radius:9px;text-decoration:none;font-weight:bold'>🗑️ Eliminar artículo</a><div style='font-size:12px;color:#64748b;margin-top:6px'>Solo se puede eliminar si no fue utilizado en una venta.</div></div><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
+    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><div style='margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb'><a href='/stock/eliminar/{pid}' style='display:inline-block;background:#dc2626;color:white;padding:10px 14px;border-radius:9px;text-decoration:none;font-weight:bold'>🗑️ Eliminar artículo</a><div style='font-size:12px;color:#64748b;margin-top:6px'>Solo se puede eliminar si no fue utilizado en una venta o reparación.</div></div><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
 
 @app.route("/stock/eliminar/<int:pid>",methods=["GET","POST"])
 def stock_eliminar(pid):
@@ -1188,13 +1199,14 @@ def stock_eliminar(pid):
     if not p:
         con.close();flash("El artículo ya no existe.","error");return redirect("/stock")
     cur.execute("SELECT COUNT(*) n FROM venta_items WHERE stock_producto_id=%s",(pid,));usos=int(cur.fetchone()["n"] or 0)
+    cur.execute("SELECT COUNT(*) n FROM orden_repuestos WHERE producto_id=%s",(pid,));usos_rep=int(cur.fetchone()["n"] or 0)
     cur.execute("SELECT COUNT(*) n FROM stock_movimientos WHERE producto_id=%s AND tipo='Venta'",(pid,));ventas_hist=int(cur.fetchone()["n"] or 0)
-    if usos>0 or ventas_hist>0:
+    if usos>0 or usos_rep>0 or ventas_hist>0:
         con.close()
         return html_layout("No se puede eliminar",card_html(f"""
         <h2 style='color:#b91c1c;margin-top:0'>🔒 No se puede eliminar</h2>
-        <p>El artículo <b>{escape(str(p['codigo']))} — {escape(str(p['nombre']))}</b> ya fue utilizado en una venta.</p>
-        <p>Para conservar el historial de ventas y movimientos, el sistema no permite borrarlo.</p>
+        <p>El artículo <b>{escape(str(p['codigo']))} — {escape(str(p['nombre']))}</b> ya fue utilizado en una venta o reparación.</p>
+        <p>Para conservar el historial de ventas, reparaciones y movimientos, el sistema no permite borrarlo.</p>
         <p><a href='/stock/producto/{pid}'>← Volver al artículo</a></p>
         """))
     if request.method=="POST":
@@ -1705,6 +1717,7 @@ def buscar():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
             <a href="/editar?numero={r['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
             <a href="/actualizar?numero={r['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
+            <a href="/orden/repuestos?numero={r['numero_orden']}" style="color:#16a34a; font-weight:bold; margin-right:10px;">Repuestos</a>
             <a href="/etiqueta?numero={r['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold;">Etiqueta</a>
           </td>
         </tr>
@@ -1767,6 +1780,7 @@ def ver_ordenes():
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">
             <a href="/editar?numero={o['numero_orden']}" style="color:#0f766e; font-weight:bold; margin-right:10px;">Editar</a>
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
+            <a href="/orden/repuestos?numero={o['numero_orden']}" style="color:#16a34a; font-weight:bold; margin-right:10px;">Repuestos</a>
             <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold; margin-right:10px;">Etiqueta</a>
             <a href="/entrega?numero={o['numero_orden']}" style="color:#b45309; font-weight:bold;">Entrega</a>
             <a href="/comprobante?numero={o['numero_orden']}" style="color:#059669; font-weight:bold; margin-left:10px;">Comprobante</a> 
@@ -1842,7 +1856,7 @@ def editar():
           <button type="submit" style="background:#0f766e;color:white;border:0;padding:12px 18px;border-radius:11px;font-weight:800;">Guardar correcciones</button>
           <a href="/actualizar?numero={val('numero_orden')}" style="margin-left:10px;color:#2563eb;font-weight:700;text-decoration:none;">Actualizar reparación</a>
         </form>
-        <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;"><a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="background:#7c3aed;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🖨️ Etiquetas</a><a href="/ver_ordenes" style="background:#111827;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">📋 Órdenes</a><a href="/" style="background:#e5e7eb;color:#111;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🏠 Inicio</a></div>
+        <div style="display:flex;gap:9px;flex-wrap:wrap;margin-top:16px;"><a href="/orden/repuestos?numero={val('numero_orden')}" style="background:#16a34a;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🧩 Repuestos usados</a><a href="/etiqueta?numero={val('numero_orden')}" target="_blank" style="background:#7c3aed;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🖨️ Etiquetas</a><a href="/ver_ordenes" style="background:#111827;color:white;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">📋 Órdenes</a><a href="/" style="background:#e5e7eb;color:#111;padding:9px 13px;border-radius:9px;text-decoration:none;font-weight:700;">🏠 Inicio</a></div>
         <style>.punto{{width:50px;height:50px;border-radius:50%;border:2px solid #0ea5e9;background:white;font-weight:800;cursor:pointer}}</style>
         <script>
           const plantillas={{"Cambio de módulo / pantalla":"Cliente declara pantalla rota, sin imagen, con manchas, líneas, parpadeo o falla de táctil.","Cambio de batería":"Cliente declara poca duración de batería, apagados inesperados o batería degradada.","Pin / conector de carga":"Cliente declara que el equipo no carga, carga intermitente o presenta juego en el conector.","No enciende":"Cliente declara que el equipo no enciende o no da señales de funcionamiento.","Software / sistema":"Cliente solicita revisión de software, sistema operativo, lentitud, errores o configuración.","Mantenimiento PC":"Cliente solicita mantenimiento general, limpieza interna y control de temperaturas.","Diagnóstico general":"Cliente solicita diagnóstico técnico para determinar la falla del equipo."}};
@@ -2472,6 +2486,159 @@ def ver_cliente(id):
 
 
 
+@app.route("/orden/repuestos", methods=["GET","POST"])
+def orden_repuestos():
+    if not session.get("login"):
+        return redirect("/login")
+    numero=(request.form.get("numero","") if request.method=="POST" else request.args.get("numero","")).strip()
+    if not numero:
+        return redirect("/ver_ordenes")
+
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT o.id,o.numero_orden,o.tipo_equipo,o.marca,o.modelo,o.costo_repuestos,c.nombre
+                   FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+                   WHERE o.numero_orden=%s""",(numero,))
+    orden=cur.fetchone()
+    if not orden:
+        con.close()
+        return html_layout("No encontrada",card_html("<h2>Orden no encontrada</h2>"))
+
+    if request.method=="POST":
+        try:
+            pid=int(request.form.get("producto_id") or 0)
+            cantidad=max(1,int(request.form.get("cantidad") or 1))
+        except Exception:
+            con.close();flash("Producto o cantidad inválida.","error");return redirect(f"/orden/repuestos?numero={numero}")
+
+        cur.execute("SELECT * FROM stock_productos WHERE id=%s AND activo=TRUE FOR UPDATE",(pid,))
+        p=cur.fetchone()
+        if not p:
+            con.close();flash("El artículo de Stock no existe o está inactivo.","error");return redirect(f"/orden/repuestos?numero={numero}")
+        anterior=int(p.get("cantidad") or 0)
+        if cantidad>anterior:
+            con.close();flash(f"No hay suficiente stock. Disponible: {anterior}.","error");return redirect(f"/orden/repuestos?numero={numero}")
+
+        costo=float(p.get("costo") or 0)
+        nueva=anterior-cantidad
+        cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,pid))
+        cur.execute("""INSERT INTO orden_repuestos(orden_id,producto_id,cantidad,costo_unitario)
+                       VALUES(%s,%s,%s,%s)""",(orden["id"],pid,cantidad,costo))
+        cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                       VALUES(%s,'Uso reparación',%s,%s,%s,%s,%s,%s,%s)""",
+                    (pid,-cantidad,anterior,nueva,costo,p.get("proveedor"),numero,
+                     f"Usado en reparación {numero}"))
+        cur.execute("""UPDATE ordenes
+                       SET costo_repuestos=COALESCE(costo_repuestos,0)+%s
+                       WHERE id=%s""",(cantidad*costo,orden["id"]))
+        con.commit();con.close()
+        flash(f"Repuesto agregado. Stock: {anterior} → {nueva}.","success")
+        return redirect(f"/orden/repuestos?numero={numero}")
+
+    cur.execute("""SELECT r.id,r.cantidad,r.costo_unitario,r.fecha,
+                          p.codigo,p.nombre,p.grupo,p.marca
+                   FROM orden_repuestos r
+                   JOIN stock_productos p ON p.id=r.producto_id
+                   WHERE r.orden_id=%s
+                   ORDER BY r.id DESC""",(orden["id"],))
+    usados=cur.fetchall()
+    cur.execute("""SELECT id,codigo,nombre,grupo,marca,cantidad,costo
+                   FROM stock_productos
+                   WHERE activo=TRUE AND cantidad>0
+                   ORDER BY grupo,nombre""")
+    productos=cur.fetchall()
+    con.close()
+
+    total_stock=sum(float(r.get("costo_unitario") or 0)*int(r.get("cantidad") or 0) for r in usados)
+    opciones="".join(
+        f"<option value='{int(p['id'])}'>{escape(str(p.get('codigo') or '-'))} · {escape(str(p.get('nombre') or '-'))} · {escape(str(p.get('grupo') or '-'))} · stock {int(p.get('cantidad') or 0)} · costo $ {float(p.get('costo') or 0):,.2f}</option>"
+        for p in productos
+    )
+    filas="".join(
+        f"""<tr>
+          <td>{escape(str(r.get('codigo') or '-'))}</td>
+          <td><b>{escape(str(r.get('nombre') or '-'))}</b><br><small>{escape(str(r.get('marca') or ''))}</small></td>
+          <td>{int(r.get('cantidad') or 0)}</td>
+          <td>$ {float(r.get('costo_unitario') or 0):,.2f}</td>
+          <td>$ {float(r.get('costo_unitario') or 0)*int(r.get('cantidad') or 0):,.2f}</td>
+          <td>
+            <form method='post' action='/orden/repuestos/quitar' onsubmit="return confirm('¿Devolver este artículo al Stock?')">
+              <input type='hidden' name='numero' value='{escape(numero, quote=True)}'>
+              <input type='hidden' name='item_id' value='{int(r["id"])}'>
+              <button style='background:#dc2626;color:white;border:0;padding:7px 10px;border-radius:8px'>Quitar</button>
+            </form>
+          </td>
+        </tr>"""
+        for r in usados
+    )
+    equipo=" ".join([str(orden.get("tipo_equipo") or ""),str(orden.get("marca") or ""),str(orden.get("modelo") or "")]).strip()
+    return html_layout("Repuestos de reparación",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🧩 Repuestos usados — {escape(numero)}</h2>
+        <p style='color:#64748b;margin:5px 0'>Cliente: <b>{escape(str(orden.get("nombre") or "-"))}</b> · {escape(equipo)}</p></div>
+        <div><a href='/editar?numero={escape(numero, quote=True)}'>← Editar orden</a> · <a href='/stock'>Stock</a></div>
+      </div>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px;margin:15px 0'>
+        <div style='background:#eff6ff;padding:14px;border-radius:12px'><small>Costo registrado en orden</small><div style='font-size:22px;font-weight:900'>$ {float(orden.get("costo_repuestos") or 0):,.2f}</div></div>
+        <div style='background:#f0fdf4;padding:14px;border-radius:12px'><small>De artículos vinculados a Stock</small><div style='font-size:22px;font-weight:900'>$ {total_stock:,.2f}</div></div>
+      </div>
+
+      <form method='post' style='background:#f8fafc;border:1px solid #e2e8f0;padding:14px;border-radius:12px'>
+        <input type='hidden' name='numero' value='{escape(numero, quote=True)}'>
+        <label><b>Agregar desde Stock</b></label><br>
+        <select name='producto_id' required style='width:100%;max-width:720px;padding:10px;margin:8px 0'>
+          <option value=''>Elegir artículo...</option>{opciones}
+        </select><br>
+        <label>Cantidad</label><br>
+        <input name='cantidad' type='number' min='1' value='1' style='width:110px;padding:9px;margin:8px 0'><br>
+        <button style='background:#16a34a;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold'>➕ Usar en reparación</button>
+      </form>
+
+      <p style='font-size:13px;color:#64748b'>Al agregar un artículo se descuenta del Stock y su costo se suma automáticamente al costo de repuestos de la orden. Si lo quitás, vuelve al Stock.</p>
+
+      <div style='overflow-x:auto'><table style='width:100%;margin-top:14px'>
+        <tr><th>Código</th><th>Artículo</th><th>Cant.</th><th>Costo unit.</th><th>Subtotal</th><th></th></tr>
+        {filas or '<tr><td colspan="6">Todavía no hay artículos de Stock vinculados a esta reparación.</td></tr>'}
+      </table></div>
+    """))
+
+
+@app.post("/orden/repuestos/quitar")
+def orden_repuestos_quitar():
+    if not session.get("login"):
+        return redirect("/login")
+    numero=request.form.get("numero","").strip()
+    try:item_id=int(request.form.get("item_id") or 0)
+    except Exception:return redirect(f"/orden/repuestos?numero={numero}")
+
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT r.id,r.orden_id,r.producto_id,r.cantidad,r.costo_unitario,
+                          p.cantidad AS stock_actual,p.proveedor
+                   FROM orden_repuestos r
+                   JOIN stock_productos p ON p.id=r.producto_id
+                   JOIN ordenes o ON o.id=r.orden_id
+                   WHERE r.id=%s AND o.numero_orden=%s
+                   FOR UPDATE""",(item_id,numero))
+    r=cur.fetchone()
+    if not r:
+        con.close();flash("Ese repuesto ya no está vinculado a la orden.","error");return redirect(f"/orden/repuestos?numero={numero}")
+
+    cant=int(r.get("cantidad") or 0); anterior=int(r.get("stock_actual") or 0); nueva=anterior+cant
+    costo=float(r.get("costo_unitario") or 0)
+    cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,r["producto_id"]))
+    cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                   VALUES(%s,'Devolución reparación',%s,%s,%s,%s,%s,%s,%s)""",
+                (r["producto_id"],cant,anterior,nueva,costo,r.get("proveedor"),numero,
+                 f"Devuelto al Stock desde reparación {numero}"))
+    cur.execute("DELETE FROM orden_repuestos WHERE id=%s",(item_id,))
+    cur.execute("""UPDATE ordenes
+                   SET costo_repuestos=GREATEST(COALESCE(costo_repuestos,0)-%s,0)
+                   WHERE id=%s""",(cant*costo,r["orden_id"]))
+    con.commit();con.close()
+    flash(f"Artículo devuelto al Stock. Stock: {anterior} → {nueva}.","success")
+    return redirect(f"/orden/repuestos?numero={numero}")
+
+
 @app.route("/eliminar_orden", methods=["GET", "POST"])
 def eliminar_orden():
     if not session.get("login"):
@@ -2488,6 +2655,22 @@ def eliminar_orden():
     if request.method=="POST":
         confirmar=request.form.get("confirmar","")
         if confirmar=="ELIMINAR":
+            cur.execute("""SELECT r.producto_id,SUM(r.cantidad) AS cantidad
+                           FROM orden_repuestos r
+                           JOIN ordenes o ON o.id=r.orden_id
+                           WHERE o.numero_orden=%s
+                           GROUP BY r.producto_id""",(numero,))
+            for r in cur.fetchall():
+                cur.execute("SELECT cantidad,costo,proveedor FROM stock_productos WHERE id=%s FOR UPDATE",(r["producto_id"],))
+                pstock=cur.fetchone()
+                if not pstock:
+                    continue
+                anterior=int(pstock.get("cantidad") or 0); cant=int(r.get("cantidad") or 0); nueva=anterior+cant
+                cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,r["producto_id"]))
+                cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                               VALUES(%s,'Reintegro orden eliminada',%s,%s,%s,%s,%s,%s,%s)""",
+                            (r["producto_id"],cant,anterior,nueva,pstock.get("costo") or 0,pstock.get("proveedor"),numero,
+                             "Reintegro automático por eliminación de orden de prueba"))
             cur.execute("DELETE FROM ordenes WHERE numero_orden=%s",(numero,))
             con.commit(); con.close()
             return redirect("/ver_ordenes")
@@ -2533,6 +2716,23 @@ def eliminar_cliente():
         if request.form.get("confirmar")!="ELIMINAR":
             con.close()
             return html_layout("Confirmación",card_html("<h2>No se eliminó el cliente</h2><p>Debés escribir ELIMINAR exactamente.</p>"))
+        # Reintegra primero cualquier artículo de Stock vinculado a órdenes del cliente.
+        cur.execute("""SELECT r.producto_id,SUM(r.cantidad) AS cantidad
+                       FROM orden_repuestos r
+                       JOIN ordenes o ON o.id=r.orden_id
+                       WHERE o.cliente_id=%s
+                       GROUP BY r.producto_id""",(cid,))
+        for r in cur.fetchall():
+            cur.execute("SELECT cantidad,costo,proveedor FROM stock_productos WHERE id=%s FOR UPDATE",(r["producto_id"],))
+            pstock=cur.fetchone()
+            if not pstock:
+                continue
+            anterior=int(pstock.get("cantidad") or 0); cant=int(r.get("cantidad") or 0); nueva=anterior+cant
+            cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,r["producto_id"]))
+            cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                           VALUES(%s,'Reintegro cliente eliminado',%s,%s,%s,%s,%s,%s,%s)""",
+                        (r["producto_id"],cant,anterior,nueva,pstock.get("costo") or 0,pstock.get("proveedor"),f"CLIENTE-{cid}",
+                         "Reintegro automático por eliminación de cliente/orden de prueba"))
         # Explicitly delete their orders first so test clients can be cleaned safely.
         cur.execute("DELETE FROM ordenes WHERE cliente_id=%s",(cid,))
         cur.execute("DELETE FROM clientes WHERE id=%s",(cid,))
