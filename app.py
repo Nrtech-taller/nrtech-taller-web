@@ -1177,7 +1177,52 @@ def stock_producto(pid):
         except:minimo=int(p.get("stock_minimo") or 0)
         cur.execute("""UPDATE stock_productos SET nombre=%s,categoria=%s,marca=%s,modelos_compatibles=%s,proveedor=%s,costo=%s,precio_venta=%s,stock_minimo=%s,ubicacion=%s,fecha_actualizacion=NOW() WHERE id=%s""",(request.form.get("nombre","").strip(),request.form.get("categoria","").strip(),request.form.get("marca","").strip(),request.form.get("compatibilidad","").strip(),request.form.get("proveedor","").strip(),costo,precio,minimo,request.form.get("ubicacion","").strip(),pid));con.commit();con.close();flash("Producto actualizado correctamente.","success");return redirect(f"/stock/producto/{pid}")
     cur.execute("SELECT * FROM stock_movimientos WHERE producto_id=%s ORDER BY id DESC LIMIT 20",(pid,));movs=cur.fetchall();con.close();filas="".join(f"<tr><td>{escape(str(m['fecha']))}</td><td>{escape(str(m['tipo']))}</td><td>{m['cantidad']}</td><td>{m.get('cantidad_anterior')}</td><td>{m.get('cantidad_nueva')}</td><td>{escape(str(m.get('referencia') or '-'))}</td></tr>" for m in movs)
-    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
+    return html_layout("Producto",card_html(f"""<h2>{escape(str(p['nombre']))}</h2><p><b>{escape(str(p['codigo']))}</b> · {escape(str(p['grupo']))}</p><div style='background:#eff6ff;padding:14px;border-radius:12px'><b>Stock actual:</b> {int(p.get('cantidad') or 0)} · <b>Mínimo:</b> {int(p.get('stock_minimo') or 0)} · <b>Ubicación:</b> {escape(str(p.get('ubicacion') or '-'))}</div><p><a href='/stock/movimiento/{pid}' style='font-weight:bold;color:#16a34a'>➕ Registrar movimiento</a> · <a href='/stock'>Volver</a></p><form method='post'><div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px'><input name='nombre' value='{escape(str(p.get("nombre") or ""))}' placeholder='Nombre'><input name='categoria' value='{escape(str(p.get("categoria") or ""))}' placeholder='Categoría'><input name='marca' value='{escape(str(p.get("marca") or ""))}' placeholder='Marca'><input name='proveedor' value='{escape(str(p.get("proveedor") or ""))}' placeholder='Proveedor'><input name='costo' value='{p.get("costo") or 0}' placeholder='Costo'><input name='precio' value='{p.get("precio_venta") or 0}' placeholder='Precio venta'><input type='number' name='minimo' value='{int(p.get("stock_minimo") or 0)}'><input name='ubicacion' value='{escape(str(p.get("ubicacion") or ""))}' placeholder='Ubicación'></div><textarea name='compatibilidad' rows='3' style='width:100%;margin-top:10px'>{escape(str(p.get("modelos_compatibles") or ""))}</textarea><button style='margin-top:10px'>Guardar cambios</button></form><div style='margin-top:18px;padding-top:14px;border-top:1px solid #e5e7eb'><a href='/stock/eliminar/{pid}' style='display:inline-block;background:#dc2626;color:white;padding:10px 14px;border-radius:9px;text-decoration:none;font-weight:bold'>🗑️ Eliminar artículo</a><div style='font-size:12px;color:#64748b;margin-top:6px'>Solo se puede eliminar si no fue utilizado en una venta.</div></div><h3>Últimos movimientos</h3><div style='overflow-x:auto'><table style='width:100%'><tr><th>Fecha</th><th>Tipo</th><th>Cant.</th><th>Antes</th><th>Después</th><th>Referencia</th></tr>{filas or '<tr><td colspan="6">Sin movimientos.</td></tr>'}</table></div>"""))
+
+@app.route("/stock/eliminar/<int:pid>",methods=["GET","POST"])
+def stock_eliminar(pid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM stock_productos WHERE id=%s",(pid,));p=cur.fetchone()
+    if not p:
+        con.close();flash("El artículo ya no existe.","error");return redirect("/stock")
+    cur.execute("SELECT COUNT(*) n FROM venta_items WHERE stock_producto_id=%s",(pid,));usos=int(cur.fetchone()["n"] or 0)
+    cur.execute("SELECT COUNT(*) n FROM stock_movimientos WHERE producto_id=%s AND tipo='Venta'",(pid,));ventas_hist=int(cur.fetchone()["n"] or 0)
+    if usos>0 or ventas_hist>0:
+        con.close()
+        return html_layout("No se puede eliminar",card_html(f"""
+        <h2 style='color:#b91c1c;margin-top:0'>🔒 No se puede eliminar</h2>
+        <p>El artículo <b>{escape(str(p['codigo']))} — {escape(str(p['nombre']))}</b> ya fue utilizado en una venta.</p>
+        <p>Para conservar el historial de ventas y movimientos, el sistema no permite borrarlo.</p>
+        <p><a href='/stock/producto/{pid}'>← Volver al artículo</a></p>
+        """))
+    if request.method=="POST":
+        if request.form.get("confirmar")!="ELIMINAR":
+            con.close();flash("No se eliminó. Escribí ELIMINAR exactamente para confirmar.","error");return redirect(f"/stock/eliminar/{pid}")
+        codigo=str(p.get("codigo") or "");nombre=str(p.get("nombre") or "")
+        try:
+            cur.execute("DELETE FROM stock_productos WHERE id=%s",(pid,))
+            con.commit()
+        except Exception:
+            con.rollback();con.close();flash("No se pudo eliminar el artículo porque tiene información asociada.","error");return redirect(f"/stock/producto/{pid}")
+        con.close();flash(f"Artículo {codigo} — {nombre} eliminado correctamente.","success");return redirect("/stock")
+    con.close()
+    return html_layout("Eliminar artículo",card_html(f"""
+      <h2 style='color:#b91c1c;margin-top:0'>🗑️ Eliminar artículo de Stock</h2>
+      <div style='background:#fef2f2;border:1px solid #fecaca;padding:14px;border-radius:12px'>
+        Código: <b>{escape(str(p['codigo']))}</b><br>
+        Artículo: <b>{escape(str(p['nombre']))}</b><br>
+        Stock actual: <b>{int(p.get('cantidad') or 0)}</b>
+      </div>
+      <p>Esto elimina también los movimientos de carga o ajustes de este artículo. Usalo para artículos cargados por error.</p>
+      <form method='post'>
+        <label>Escribí <b>ELIMINAR</b> para confirmar:</label><br>
+        <input name='confirmar' autocomplete='off' style='padding:10px;margin:8px 0' required><br>
+        <button style='background:#dc2626;color:white;border:0;padding:11px 16px;border-radius:9px;font-weight:bold'>Eliminar definitivamente</button>
+        <a href='/stock/producto/{pid}' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
 
 @app.route("/stock/movimiento/<int:pid>",methods=["GET","POST"])
 def stock_movimiento(pid):
