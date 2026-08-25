@@ -245,6 +245,8 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS fecha_comprobante TIMESTAMP;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_forma_pago TEXT;")
     cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS comprobante_total NUMERIC;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS es_garantia BOOLEAN DEFAULT FALSE;")
+    cur.execute("ALTER TABLE ordenes ADD COLUMN IF NOT EXISTS garantia_reclamo_id INTEGER;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS orden_repuestos (
@@ -297,6 +299,14 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha_alta TIMESTAMP DEFAULT NOW()
     );
     """)
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS taller_orden_id INTEGER REFERENCES ordenes(id) ON DELETE SET NULL;")
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS cobertura TEXT;")
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS monto_cliente NUMERIC DEFAULT 0;")
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS constancia_numero TEXT;")
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS constancia_token TEXT;")
+    cur.execute("ALTER TABLE garantia_reclamos ADD COLUMN IF NOT EXISTS fecha_constancia TIMESTAMP;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_garantia_constancia_numero ON garantia_reclamos(constancia_numero) WHERE constancia_numero IS NOT NULL;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_garantia_constancia_token ON garantia_reclamos(constancia_token) WHERE constancia_token IS NOT NULL;")
     # Corrige órdenes antiguas marcadas como Entregado sin fecha de entrega.
     # Si tienen comprobante, usamos su fecha; si no, la fecha actual.
     cur.execute("""
@@ -2883,12 +2893,15 @@ def garantia_reclamo(rid):
                           COALESCE(o.numero_orden,v.numero_venta) AS referencia,
                           COALESCE(o.comprobante_numero,v.comprobante_numero) AS factura,
                           COALESCE(co.nombre,cv.nombre,'Consumidor final') AS cliente,
-                          COALESCE(o.tipo_equipo,'Venta') AS tipo_equipo,o.marca,o.modelo,o.imei
+                          COALESCE(co.telefono,cv.telefono,'') AS telefono,
+                          COALESCE(o.tipo_equipo,'Venta') AS tipo_equipo,o.marca,o.modelo,o.imei,
+                          ot.numero_orden AS taller_numero,ot.estado AS taller_estado
                    FROM garantia_reclamos gr
                    LEFT JOIN ordenes o ON o.id=gr.orden_id
                    LEFT JOIN clientes co ON co.id=o.cliente_id
                    LEFT JOIN ventas v ON v.id=gr.venta_id
                    LEFT JOIN clientes cv ON cv.id=v.cliente_id
+                   LEFT JOIN ordenes ot ON ot.id=gr.taller_orden_id
                    WHERE gr.id=%s""",(rid,))
     r=cur.fetchone()
     if not r:
@@ -2901,6 +2914,14 @@ def garantia_reclamo(rid):
         diagnostico=request.form.get("diagnostico","").strip()
         solucion=request.form.get("solucion","").strip()
         observaciones=request.form.get("observaciones","").strip()
+
+        # Si ya reingresó al taller, el cierre debe hacerse desde "Finalizar garantía"
+        # para que se genere la constancia y quede todo trazado.
+        if r.get("taller_orden_id") and estado=="Cerrado" and not r.get("constancia_numero"):
+            con.close()
+            flash("Este reclamo ya reingresó al taller. Finalizalo desde la orden de garantía para generar la constancia.","error")
+            return redirect(f"/garantias/orden/{int(r['taller_orden_id'])}/finalizar")
+
         fecha_cierre=datetime.date.today() if estado=="Cerrado" else None
         cur.execute("""UPDATE garantia_reclamos
                        SET estado=%s,diagnostico=%s,solucion=%s,observaciones=%s,fecha_cierre=%s
@@ -2912,6 +2933,54 @@ def garantia_reclamo(rid):
     estados=["Abierto","En revisión","Aceptado","Rechazado","Cerrado"]
     opts="".join(f"<option {'selected' if r.get('estado')==e else ''}>{e}</option>" for e in estados)
     equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip()
+
+    taller_bloque=""
+    if r.get("taller_orden_id"):
+        if r.get("constancia_numero"):
+            publica=f"{BASE_URL or request.url_root.rstrip('/')}/garantia/constancia/{r.get('constancia_token')}"
+            tel=''.join(ch for ch in str(r.get("telefono") or "") if ch.isdigit())
+            if tel and not tel.startswith("598"):
+                tel="598"+tel.lstrip("0")
+            texto_wa=quote(
+                f"Hola {r.get('cliente') or ''}, te enviamos la constancia de la reparación en garantía "
+                f"{r.get('constancia_numero') or ''}, vinculada a la factura original {r.get('factura') or '-'}. "
+                f"Importe a cargo: $ {float(r.get('monto_cliente') or 0):,.2f}. Ver constancia: {publica}"
+            )
+            wa=f"https://wa.me/{tel}?text={texto_wa}" if tel else f"https://wa.me/?text={texto_wa}"
+            boton_cobro = ""
+            if float(r.get("monto_cliente") or 0)>0:
+                boton_cobro=f"<a href='/comprobante?numero={quote(str(r.get('taller_numero') or ''))}' style='background:#059669;color:white;padding:9px 12px;border-radius:9px;text-decoration:none;font-weight:bold'>🧾 Generar comprobante por el importe</a>"
+            taller_bloque=f"""
+            <div style='background:#f0fdf4;border:1px solid #86efac;padding:14px;border-radius:12px;margin-bottom:15px'>
+              <b>✅ Garantía finalizada</b><br>
+              Orden de taller: <a href='/editar?numero={quote(str(r.get("taller_numero") or ""))}'><b>{escape(str(r.get("taller_numero") or "-"))}</b></a><br>
+              Constancia: <b>{escape(str(r.get("constancia_numero") or "-"))}</b> ·
+              Cobertura: <b>{escape(str(r.get("cobertura") or "-"))}</b> ·
+              Importe cliente: <b>$ {float(r.get("monto_cliente") or 0):,.2f}</b><br><br>
+              <div style='display:flex;gap:8px;flex-wrap:wrap'>
+                <a href='/garantias/constancia/{rid}' target='_blank' style='background:#334155;color:white;padding:9px 12px;border-radius:9px;text-decoration:none;font-weight:bold'>🧾 Ver / imprimir constancia</a>
+                <a href='{wa}' target='_blank' style='background:#16a34a;color:white;padding:9px 12px;border-radius:9px;text-decoration:none;font-weight:bold'>📲 Enviar por WhatsApp</a>
+                {boton_cobro}
+              </div>
+            </div>"""
+        else:
+            taller_bloque=f"""
+            <div style='background:#ede9fe;border:1px solid #c4b5fd;padding:14px;border-radius:12px;margin-bottom:15px'>
+              <b>🛡️ Equipo reingresado al taller</b><br>
+              Orden: <a href='/editar?numero={quote(str(r.get("taller_numero") or ""))}'><b>{escape(str(r.get("taller_numero") or "-"))}</b></a>
+              · Estado: <b>{escape(str(r.get("taller_estado") or "-"))}</b><br><br>
+              <a href='/garantias/orden/{int(r["taller_orden_id"])}/finalizar' style='background:#7c3aed;color:white;padding:9px 12px;border-radius:9px;text-decoration:none;font-weight:bold'>✅ Finalizar garantía y generar constancia</a>
+            </div>"""
+    elif r.get("estado") not in ("Rechazado","Cerrado"):
+        taller_bloque=f"""
+        <div style='background:#ede9fe;border:1px solid #c4b5fd;padding:14px;border-radius:12px;margin-bottom:15px'>
+          <b>¿El equipo queda en el taller?</b><br>
+          Crea una nueva orden marcada como <b>🛡️ GARANTÍA</b>, vinculada a la factura y reparación original.<br><br>
+          <form method='post' action='/garantias/reclamo/{rid}/ingresar_taller' onsubmit="return confirm('¿Ingresar este equipo al taller como garantía?')">
+            <button style='background:#7c3aed;color:white;border:0;padding:10px 14px;border-radius:9px;font-weight:bold'>🔧 Ingresar al taller</button>
+          </form>
+        </div>"""
+
     return html_layout("Reclamo de garantía",card_html(f"""
       <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
         <div><h2 style='margin:0'>🛡️ Reclamo #{rid}</h2><p style='color:#64748b;margin:5px 0'>{escape(str(r.get('referencia') or '-'))} · {escape(str(r.get('cliente') or '-'))}</p></div>
@@ -2919,17 +2988,316 @@ def garantia_reclamo(rid):
       </div>
       <div style='background:#f8fafc;padding:14px;border-radius:12px;margin:14px 0'>
         <b>{escape(equipo or '-')}</b>{f" · IMEI {escape(str(r.get('imei')))}" if r.get('imei') else ''}<br>
-        <small>Ingresado: {escape(str(r.get('fecha_reclamo') or '-'))} · Factura: {escape(str(r.get('factura') or '-'))}</small>
+        <small>Ingresado: {escape(str(r.get('fecha_reclamo') or '-'))} · Factura original: {escape(str(r.get('factura') or '-'))}</small>
       </div>
       <div style='background:#fff7ed;border:1px solid #fed7aa;padding:13px;border-radius:12px;margin-bottom:15px'><b>Motivo informado:</b><br>{escape(str(r.get('motivo') or '-'))}</div>
+
+      {taller_bloque}
+
       <form method='post'>
-        <label><b>Estado</b></label><br><select name='estado' style='padding:9px;margin:6px 0 12px'>{opts}</select><br>
+        <label><b>Estado del reclamo</b></label><br><select name='estado' style='padding:9px;margin:6px 0 12px'>{opts}</select><br>
         <label><b>Diagnóstico de garantía</b></label><br><textarea name='diagnostico' rows='4' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('diagnostico') or ''))}</textarea>
         <label><b>Solución / trabajo realizado</b></label><br><textarea name='solucion' rows='4' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('solucion') or ''))}</textarea>
         <label>Observaciones</label><br><textarea name='observaciones' rows='3' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('observaciones') or ''))}</textarea>
         <button style='background:#7c3aed;color:white;border:0;padding:11px 15px;border-radius:9px;font-weight:bold'>Guardar seguimiento</button>
       </form>
     """))
+
+
+@app.post("/garantias/reclamo/<int:rid>/ingresar_taller")
+def garantia_ingresar_taller(rid):
+    if not session.get("login"):
+        return redirect("/login")
+
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM garantia_reclamos WHERE id=%s FOR UPDATE",(rid,))
+    gr=cur.fetchone()
+    if not gr:
+        con.close();return redirect("/garantias/reclamos")
+    if gr.get("taller_orden_id"):
+        cur.execute("SELECT numero_orden FROM ordenes WHERE id=%s",(gr["taller_orden_id"],))
+        ya=cur.fetchone();con.close()
+        if ya:
+            return redirect(f"/editar?numero={quote(str(ya['numero_orden']))}")
+        return redirect(f"/garantias/reclamo/{rid}")
+
+    cliente_id=None
+    tipo_equipo="Celular"
+    marca=""
+    modelo=""
+    numero_serie=""
+    imei=""
+    accesorios=""
+    estado_general=""
+    referencia_origen="-"
+    factura_origen="-"
+
+    if gr.get("orden_id"):
+        cur.execute("""SELECT o.*,c.id AS cid
+                       FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+                       WHERE o.id=%s""",(gr["orden_id"],))
+        origen=cur.fetchone()
+        if not origen:
+            con.close();return redirect(f"/garantias/reclamo/{rid}")
+        cliente_id=origen["cid"]
+        tipo_equipo=origen.get("tipo_equipo") or "Celular"
+        marca=origen.get("marca") or ""
+        modelo=origen.get("modelo") or ""
+        numero_serie=origen.get("numero_serie") or ""
+        imei=origen.get("imei") or ""
+        accesorios=origen.get("accesorios") or ""
+        estado_general=origen.get("estado_general") or ""
+        referencia_origen=origen.get("numero_orden") or "-"
+        factura_origen=origen.get("comprobante_numero") or "-"
+    else:
+        cur.execute("""SELECT v.*,c.id AS cid,COALESCE(c.nombre,'Consumidor final') AS cliente
+                       FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id
+                       WHERE v.id=%s""",(gr.get("venta_id"),))
+        origen=cur.fetchone()
+        if not origen:
+            con.close();return redirect(f"/garantias/reclamo/{rid}")
+        cliente_id=origen.get("cid")
+        referencia_origen=origen.get("numero_venta") or "-"
+        factura_origen=origen.get("comprobante_numero") or "-"
+        cur.execute("SELECT descripcion FROM venta_items WHERE venta_id=%s ORDER BY id LIMIT 3",(gr.get("venta_id"),))
+        items=cur.fetchall()
+        modelo=" / ".join(str(x.get("descripcion") or "") for x in items if x.get("descripcion"))[:250]
+        tipo_equipo="Producto / venta"
+
+        if not cliente_id:
+            cur.execute("SELECT id FROM clientes WHERE nombre='Consumidor final' ORDER BY id LIMIT 1")
+            cli=cur.fetchone()
+            if cli:
+                cliente_id=cli["id"]
+            else:
+                cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES('Consumidor final','','') RETURNING id")
+                cliente_id=cur.fetchone()["id"]
+
+    token_aprobacion=secrets.token_urlsafe(32)
+    observ=f"REINGRESO POR GARANTÍA. Reclamo #{rid}. Origen: {referencia_origen}. Factura original: {factura_origen}."
+    cur.execute("""
+        INSERT INTO ordenes(
+            numero_orden,cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,
+            estado_general,falla_cliente,diagnostico_tecnico,fecha_ingreso,estado,
+            presupuesto,observaciones,token_aprobacion,presupuesto_aprobado,
+            fecha_aprobacion,presupuesto_rechazado,fecha_rechazo,
+            accesorios,servicio_rapido,garantia_dias,es_garantia,garantia_reclamo_id
+        )
+        VALUES('',%s,%s,%s,%s,%s,%s,%s,%s,'',CURRENT_DATE,'Recibido en taller',
+               0,%s,%s,FALSE,NULL,FALSE,NULL,%s,'Garantía / reingreso',0,TRUE,%s)
+        RETURNING id
+    """,(cliente_id,tipo_equipo,marca,modelo,numero_serie,imei,estado_general,
+         gr.get("motivo") or "Reingreso por garantía",observ,token_aprobacion,accesorios,rid))
+    oid=cur.fetchone()["id"]
+    numero=f"NR-{datetime.datetime.now().year}-{oid:04d}"
+    cur.execute("UPDATE ordenes SET numero_orden=%s WHERE id=%s",(numero,oid))
+    cur.execute("""UPDATE garantia_reclamos
+                   SET taller_orden_id=%s,estado='En revisión'
+                   WHERE id=%s""",(oid,rid))
+    con.commit();con.close()
+    flash(f"Equipo ingresado al taller como garantía. Orden {numero}.","success")
+    return redirect(f"/editar?numero={quote(numero)}")
+
+
+@app.route("/garantias/orden/<int:oid>/finalizar",methods=["GET","POST"])
+def garantia_finalizar_orden(oid):
+    if not session.get("login"):
+        return redirect("/login")
+
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT o.*,gr.id AS reclamo_id,gr.motivo,gr.constancia_numero,
+                          COALESCE(oo.numero_orden,v.numero_venta) AS referencia_origen,
+                          COALESCE(oo.comprobante_numero,v.comprobante_numero) AS factura_origen,
+                          COALESCE(co.nombre,cv.nombre,cot.nombre,'Consumidor final') AS cliente,
+                          COALESCE(co.telefono,cv.telefono,cot.telefono,'') AS telefono
+                   FROM ordenes o
+                   JOIN garantia_reclamos gr ON gr.id=o.garantia_reclamo_id
+                   LEFT JOIN ordenes oo ON oo.id=gr.orden_id
+                   LEFT JOIN clientes co ON co.id=oo.cliente_id
+                   LEFT JOIN ventas v ON v.id=gr.venta_id
+                   LEFT JOIN clientes cv ON cv.id=v.cliente_id
+                   LEFT JOIN clientes cot ON cot.id=o.cliente_id
+                   WHERE o.id=%s AND o.es_garantia=TRUE""",(oid,))
+    x=cur.fetchone()
+    if not x:
+        con.close();return redirect("/ver_ordenes")
+    if x.get("constancia_numero"):
+        rid=int(x["reclamo_id"]);con.close()
+        return redirect(f"/garantias/reclamo/{rid}")
+
+    if request.method=="POST":
+        cobertura=request.form.get("cobertura","Cubierta").strip()
+        if cobertura not in ("Cubierta","Con costo"):
+            cobertura="Cubierta"
+        diagnostico=request.form.get("diagnostico","").strip()
+        trabajo=request.form.get("trabajo_realizado","").strip()
+        observaciones=request.form.get("observaciones","").strip()
+        if not trabajo:
+            con.close();flash("Indicá el trabajo realizado.","error");return redirect(f"/garantias/orden/{oid}/finalizar")
+
+        if cobertura=="Cubierta":
+            monto=0.0
+        else:
+            try:monto=max(0.0,float((request.form.get("monto_cliente") or "0").replace(",",".")))
+            except Exception:monto=0.0
+            if monto<=0:
+                con.close();flash("Si no está cubierto, ingresá el importe a cargo del cliente.","error");return redirect(f"/garantias/orden/{oid}/finalizar")
+
+        rid=int(x["reclamo_id"])
+        constancia=f"NR-GAR-{datetime.datetime.now().year}-{rid:05d}"
+        token=secrets.token_urlsafe(24)
+
+        cur.execute("""UPDATE ordenes
+                       SET diagnostico_tecnico=%s,presupuesto=%s,estado='Entregado',
+                           fecha_entregado=CURRENT_DATE,garantia_dias=0
+                       WHERE id=%s""",(diagnostico,monto,oid))
+        cur.execute("""UPDATE garantia_reclamos
+                       SET estado='Cerrado',diagnostico=%s,solucion=%s,
+                           observaciones=%s,fecha_cierre=CURRENT_DATE,
+                           cobertura=%s,monto_cliente=%s,constancia_numero=%s,
+                           constancia_token=%s,fecha_constancia=NOW()
+                       WHERE id=%s""",
+                    (diagnostico,trabajo,observaciones,cobertura,monto,constancia,token,rid))
+        con.commit();con.close()
+        flash(f"Garantía finalizada. Constancia {constancia} generada.","success")
+        return redirect(f"/garantias/reclamo/{rid}")
+
+    con.close()
+    equipo=" ".join(filter(None,[str(x.get("tipo_equipo") or ""),str(x.get("marca") or ""),str(x.get("modelo") or "")])).strip()
+    return html_layout("Finalizar garantía",card_html(f"""
+      <h2 style='margin-top:0'>✅ Finalizar reparación en garantía</h2>
+      <div style='background:#ede9fe;border:1px solid #c4b5fd;padding:14px;border-radius:12px;margin-bottom:15px'>
+        <b>Orden:</b> {escape(str(x.get("numero_orden") or "-"))}<br>
+        <b>Cliente:</b> {escape(str(x.get("cliente") or "-"))}<br>
+        <b>Equipo:</b> {escape(equipo or "-")}<br>
+        <b>Factura original:</b> {escape(str(x.get("factura_origen") or "-"))}<br>
+        <b>Motivo de garantía:</b> {escape(str(x.get("motivo") or "-"))}
+      </div>
+
+      <form method='post'>
+        <label><b>Resultado de la cobertura</b></label><br>
+        <select name='cobertura' id='coberturaGar' onchange='cambiarCobertura()' style='padding:10px;margin:7px 0 12px'>
+          <option value='Cubierta'>✅ Cubierto por garantía — cliente paga $0</option>
+          <option value='Con costo'>💵 No cubierto / trabajo con costo</option>
+        </select><br>
+
+        <div id='montoGar' style='display:none;background:#fff7ed;border:1px solid #fed7aa;padding:12px;border-radius:10px;margin-bottom:12px'>
+          <label><b>Importe a cargo del cliente</b></label><br>
+          <input name='monto_cliente' inputmode='decimal' placeholder='Ej: 1200' style='padding:10px;width:220px;margin-top:6px'>
+          <p style='font-size:12px;color:#78350f;margin-bottom:0'>Este importe quedará en la constancia y como saldo de la orden. Luego podés generar un comprobante normal por ese monto.</p>
+        </div>
+
+        <label><b>Diagnóstico</b></label><br>
+        <textarea name='diagnostico' rows='4' style='width:100%;padding:10px;margin:7px 0 12px'>{escape(str(x.get("diagnostico_tecnico") or ""))}</textarea>
+
+        <label><b>Trabajo realizado</b></label><br>
+        <textarea name='trabajo_realizado' rows='5' required placeholder='Ej: se sustituyó el módulo defectuoso, se realizaron pruebas y quedó funcionando correctamente...' style='width:100%;padding:10px;margin:7px 0 12px'></textarea>
+
+        <label>Observaciones</label><br>
+        <textarea name='observaciones' rows='3' style='width:100%;padding:10px;margin:7px 0 12px'></textarea>
+
+        <button style='background:#7c3aed;color:white;border:0;padding:12px 16px;border-radius:10px;font-weight:bold'>🧾 Finalizar y generar constancia</button>
+        <a href='/editar?numero={quote(str(x.get("numero_orden") or ""))}' style='margin-left:10px'>Cancelar</a>
+      </form>
+      <script>
+        function cambiarCobertura(){{
+          document.getElementById('montoGar').style.display =
+            document.getElementById('coberturaGar').value==='Con costo' ? 'block' : 'none';
+        }}
+        cambiarCobertura();
+      </script>
+    """))
+
+
+def _constancia_garantia_datos_por_token(token):
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT gr.*,ot.numero_orden AS taller_numero,
+                          ot.tipo_equipo,ot.marca,ot.modelo,ot.imei,ot.numero_serie,
+                          COALESCE(oo.numero_orden,v.numero_venta) AS referencia_origen,
+                          COALESCE(oo.comprobante_numero,v.comprobante_numero) AS factura_origen,
+                          COALESCE(co.nombre,cv.nombre,cot.nombre,'Consumidor final') AS cliente
+                   FROM garantia_reclamos gr
+                   JOIN ordenes ot ON ot.id=gr.taller_orden_id
+                   LEFT JOIN clientes cot ON cot.id=ot.cliente_id
+                   LEFT JOIN ordenes oo ON oo.id=gr.orden_id
+                   LEFT JOIN clientes co ON co.id=oo.cliente_id
+                   LEFT JOIN ventas v ON v.id=gr.venta_id
+                   LEFT JOIN clientes cv ON cv.id=v.cliente_id
+                   WHERE gr.constancia_token=%s""",(token,))
+    r=cur.fetchone()
+    cur.execute("SELECT * FROM configuracion_empresa WHERE id=1")
+    emp=cur.fetchone()
+    con.close()
+    return r,emp
+
+
+def _render_constancia_garantia(r,emp):
+    if not r:
+        return "Constancia no encontrada",404
+    equipo=" ".join(filter(None,[str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")])).strip()
+    monto=float(r.get("monto_cliente") or 0)
+    cubierta=str(r.get("cobertura") or "")=="Cubierta"
+    return f"""<!doctype html><html><head><meta charset='utf-8'><title>{escape(str(r.get('constancia_numero') or 'Constancia de garantía'))}</title>
+    <style>@page{{size:A4;margin:16mm}}body{{font-family:Arial,sans-serif;color:#111;max-width:780px;margin:auto}}.head{{border-bottom:3px solid #111;padding-bottom:12px}}.box{{border:1px solid #ddd;border-radius:12px;padding:18px;margin-top:16px}}.ok{{background:#f0fdf4;border:1px solid #86efac;padding:14px;border-radius:10px}}.cost{{background:#fff7ed;border:1px solid #fdba74;padding:14px;border-radius:10px}}.r{{margin:8px 0}}button{{padding:10px 16px}}@media print{{button{{display:none}}}}</style>
+    </head><body>
+      <div class='head'>
+        <h1 style='margin:0'>{escape(str((emp or {}).get('nombre_comercial') or 'NR Tech'))}</h1>
+        <b>Constancia de reparación en garantía</b>
+        <div>{escape(str((emp or {}).get('titular') or ''))}</div>
+        <div>RUT: {escape(str((emp or {}).get('rut') or '-'))}</div>
+        <div>{escape(str((emp or {}).get('domicilio_fiscal') or ''))}</div>
+      </div>
+
+      <div class='box'>
+        <div class='r'><b>Constancia:</b> {escape(str(r.get('constancia_numero') or '-'))}</div>
+        <div class='r'><b>Fecha:</b> {r.get('fecha_constancia').strftime('%d/%m/%Y') if hasattr(r.get('fecha_constancia'),'strftime') else escape(str(r.get('fecha_constancia') or '-'))}</div>
+        <div class='r'><b>Cliente:</b> {escape(str(r.get('cliente') or '-'))}</div>
+        <div class='r'><b>Orden de garantía:</b> {escape(str(r.get('taller_numero') or '-'))}</div>
+        <div class='r'><b>Referencia original:</b> {escape(str(r.get('referencia_origen') or '-'))}</div>
+        <div class='r'><b>Factura/comprobante original:</b> {escape(str(r.get('factura_origen') or '-'))}</div>
+        <hr>
+        <div class='r'><b>Equipo:</b> {escape(equipo or '-')}</div>
+        {f"<div class='r'><b>IMEI:</b> {escape(str(r.get('imei')))}</div>" if r.get('imei') else ""}
+        {f"<div class='r'><b>Serie:</b> {escape(str(r.get('numero_serie')))}</div>" if r.get('numero_serie') else ""}
+        <div class='r'><b>Motivo del reingreso:</b> {escape(str(r.get('motivo') or '-'))}</div>
+        <div class='r'><b>Diagnóstico:</b> {escape(str(r.get('diagnostico') or '-'))}</div>
+        <div class='r'><b>Trabajo realizado:</b> {escape(str(r.get('solucion') or '-'))}</div>
+        {f"<div class='r'><b>Observaciones:</b> {escape(str(r.get('observaciones')))}</div>" if r.get('observaciones') else ""}
+      </div>
+
+      <div class='{"ok" if cubierta else "cost"}' style='margin-top:16px'>
+        <b>{'✅ Trabajo cubierto por garantía' if cubierta else '💵 Trabajo no cubierto / con costo'}</b><br>
+        Importe a cargo del cliente: <b>$ {monto:,.2f}</b>
+      </div>
+
+      <p style='font-size:12px;color:#64748b'>
+        Esta constancia deja registro del uso y resolución de la garantía y se vincula al comprobante original.
+        No modifica la factura/comprobante original.
+        {'No genera un nuevo cargo al cliente.' if cubierta else 'Si corresponde un cobro, el comprobante por ese importe se emite por separado.'}
+      </p>
+      <button onclick='window.print()'>🖨️ Imprimir / guardar PDF</button>
+    </body></html>"""
+
+
+@app.get("/garantias/constancia/<int:rid>")
+def garantia_constancia_privada(rid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db();cur=con.cursor()
+    cur.execute("SELECT constancia_token FROM garantia_reclamos WHERE id=%s",(rid,))
+    x=cur.fetchone();con.close()
+    if not x or not x.get("constancia_token"):
+        flash("Este reclamo todavía no tiene constancia.","error")
+        return redirect(f"/garantias/reclamo/{rid}")
+    r,emp=_constancia_garantia_datos_por_token(x["constancia_token"])
+    return _render_constancia_garantia(r,emp)
+
+
+@app.get("/garantia/constancia/<token>")
+def garantia_constancia_publica(token):
+    r,emp=_constancia_garantia_datos_por_token(token)
+    return _render_constancia_garantia(r,emp)
+
 
 
 @app.get("/garantias/reclamos")
@@ -3210,7 +3578,7 @@ def buscar():
     cur.execute(
         """
         SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-               o.estado,o.presupuesto
+               o.estado,o.presupuesto,o.es_garantia
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
         WHERE
@@ -3258,7 +3626,7 @@ def buscar():
 
         html += f"""
         <tr>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['numero_orden']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['numero_orden']}{"<br><span style='background:#ede9fe;color:#6d28d9;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:bold'>🛡️ GARANTÍA</span>" if r.get("es_garantia") else ""}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['nombre']}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{r['estado']}</td>
@@ -3289,10 +3657,12 @@ def ver_ordenes():
 
     cur.execute(
         """
-        SELECT o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
-               o.estado,o.presupuesto
+        SELECT o.id,o.numero_orden,c.nombre,o.tipo_equipo,o.marca,o.modelo,
+               o.estado,o.presupuesto,o.es_garantia,o.garantia_reclamo_id,
+               gr.constancia_numero
         FROM ordenes o
         JOIN clientes c ON o.cliente_id=c.id
+        LEFT JOIN garantia_reclamos gr ON gr.id=o.garantia_reclamo_id
         ORDER BY CASE WHEN o.estado = 'Entregado' THEN 1 ELSE 0 END ASC, o.id DESC
         """
     )
@@ -3319,9 +3689,18 @@ def ver_ordenes():
         pres = "En diagnóstico" if float(o["presupuesto"] or 0) == 0 else f"${o['presupuesto']}"
         badge = estado_presupuesto_badge(o["estado"], o.get("presupuesto_aprobado"), o.get("presupuesto_rechazado"), o.get("fecha_aprobacion"), o.get("fecha_rechazo"))
 
+        garantia_badge = "<br><span style='background:#ede9fe;color:#6d28d9;padding:3px 7px;border-radius:999px;font-size:11px;font-weight:bold'>🛡️ GARANTÍA</span>" if o.get("es_garantia") else ""
+        if o.get("es_garantia"):
+            if o.get("constancia_numero"):
+                accion_cierre=f"<a href='/garantias/constancia/{int(o['garantia_reclamo_id'])}' target='_blank' style='color:#7c3aed;font-weight:bold;margin-left:10px'>Constancia</a>"
+            else:
+                accion_cierre=f"<a href='/garantias/orden/{int(o['id'])}/finalizar' style='color:#7c3aed;font-weight:bold;margin-left:10px'>Finalizar garantía</a>"
+        else:
+            accion_cierre=f"<a href='/entrega?numero={o['numero_orden']}' style='color:#b45309;font-weight:bold'>Entrega</a><a href='/comprobante?numero={o['numero_orden']}' style='color:#059669;font-weight:bold;margin-left:10px'>Comprobante</a>"
+
         html += f"""
         <tr>
-          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['numero_orden']}</td>
+          <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['numero_orden']}{garantia_badge}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['nombre']}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{equipo}</td>
           <td style="padding:12px; border-bottom:1px solid #e5e7eb;">{o['estado']}</td>
@@ -3332,8 +3711,7 @@ def ver_ordenes():
             <a href="/actualizar?numero={o['numero_orden']}" style="color:#2563eb; font-weight:bold; margin-right:10px;">Actualizar</a>
             <a href="/orden/repuestos?numero={o['numero_orden']}" style="color:#16a34a; font-weight:bold; margin-right:10px;">Repuestos</a>
             <a href="/etiqueta?numero={o['numero_orden']}" target="_blank" style="color:#7c3aed; font-weight:bold; margin-right:10px;">Etiqueta</a>
-            <a href="/entrega?numero={o['numero_orden']}" style="color:#b45309; font-weight:bold;">Entrega</a>
-            <a href="/comprobante?numero={o['numero_orden']}" style="color:#059669; font-weight:bold; margin-left:10px;">Comprobante</a> 
+            {accion_cierre}
             <a href="/eliminar_orden?numero={o['numero_orden']}" style="color:#dc2626; font-weight:bold; margin-left:10px;">Eliminar</a>
           </td>
         </tr>
@@ -3369,9 +3747,17 @@ def editar():
         formas=["","Efectivo","Transferencia","Débito","Crédito","Mixto"]
         forma_opts="".join(f'<option value="{f}" {"selected" if str(x["forma_pago"] or "")==f else ""}>{f or "Sin definir"}</option>' for f in formas)
 
+        garantia_aviso = ""
+        if x.get("es_garantia"):
+            garantia_aviso=f"""<div style="background:#ede9fe;border:1px solid #c4b5fd;padding:12px;border-radius:12px;margin-bottom:14px">
+              <b>🛡️ ORDEN DE GARANTÍA</b> · Reclamo #{int(x.get("garantia_reclamo_id") or 0)}<br>
+              Esta orden debe cerrarse con <a href="/garantias/orden/{int(x['id'])}/finalizar"><b>Finalizar garantía</b></a> para generar la constancia.
+            </div>"""
+
         contenido=f"""
         <h2 style="margin-top:0;">Editar {val('numero_orden')}</h2>
         <p style="color:#6b7280;margin-top:-6px;">Todo editable, pero ordenado en bloques desplegables.</p>
+        {garantia_aviso}
         <form method="post"><input type="hidden" name="numero" value="{val('numero_orden')}">
           <details open style="padding:14px;border:1px solid #e5e7eb;border-radius:14px;margin-bottom:12px;"><summary style="cursor:pointer;font-weight:800;">👤 Cliente y equipo</summary>
             <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px;padding-top:12px;">
@@ -3541,6 +3927,12 @@ def actualizar():
     if not actual:
         con.close()
         return html_layout("No encontrada", card_html("<h2 style='margin-top:0;'>Orden no encontrada</h2>"))
+
+    if actual.get("es_garantia") and estado=="Entregado":
+        oid=int(actual["id"])
+        con.close()
+        flash("Las órdenes de garantía se entregan desde “Finalizar garantía” para generar la constancia.","error")
+        return redirect(f"/garantias/orden/{oid}/finalizar")
 
     if estado == "Esperando aprobación" and actual["estado"] != "Esperando aprobación":
         if not actual.get("presupuesto_aprobado") and not actual.get("presupuesto_rechazado"):
@@ -4457,6 +4849,15 @@ def comprobante():
     if not o:
         con.close()
         return html_layout("No encontrada", card_html("<h2>Orden no encontrada</h2>"))
+
+    if o.get("es_garantia") and float(o.get("presupuesto") or 0)<=0:
+        cur.execute("SELECT id,constancia_numero FROM garantia_reclamos WHERE id=%s",(o.get("garantia_reclamo_id"),))
+        gr=cur.fetchone()
+        con.close()
+        if gr and gr.get("constancia_numero"):
+            return redirect(f"/garantias/constancia/{int(gr['id'])}")
+        flash("Esta es una orden de garantía sin costo. Finalizala para generar su constancia $0.","error")
+        return redirect(f"/garantias/orden/{int(o['id'])}/finalizar")
 
     # Si ya existe, no permitimos generar ni modificar otro comprobante para la misma orden.
     if o.get("comprobante_numero"):
