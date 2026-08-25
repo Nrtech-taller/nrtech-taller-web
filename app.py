@@ -8,6 +8,8 @@ from pathlib import Path
 from email.message import EmailMessage
 from email.utils import formataddr
 import datetime
+import calendar
+from decimal import Decimal, ROUND_HALF_UP
 import secrets
 from html import escape
 from urllib.parse import quote
@@ -36,6 +38,10 @@ CONTRASENA_APP = os.environ.get("GMAIL_APP_PASSWORD")
 WHATSAPP_LINK = "https://wa.me/59898705065"
 BASE_URL = os.environ.get("BASE_URL")
 DATABASE_URL = os.environ.get("DATABASE_URL")
+
+# Área privada. En una futura versión comercial se puede desactivar desde Render
+# con PERSONAL_FINANCE_ENABLED=0 sin tocar las tablas ni la lógica de NR Tech.
+PERSONAL_FINANCE_ENABLED = os.environ.get("PERSONAL_FINANCE_ENABLED", "1").strip().lower() not in ("0","false","no","off")
 
 
 def db():
@@ -84,6 +90,13 @@ def html_layout(titulo, contenido):
     login_header = ""
 
     if logueado:
+        personal_nav = ""
+        if PERSONAL_FINANCE_ENABLED:
+            personal_nav = f"""
+              <div class="nav-section">PERSONAL · PRIVADO</div>
+              {nav_item("/personal", "🔒", "Mis Finanzas", ["/personal"])}
+            """
+
         menu = f"""
           <div class="nav-section">TALLER</div>
           {nav_item("/", "⌂", "Inicio", ["/"])}
@@ -103,6 +116,8 @@ def html_layout(titulo, contenido):
           {nav_item("/finanzas", "◒", "Finanzas", ["/finanzas","/gastos","/cobros"])}
           {nav_item("/solicitudes_ingreso", "↗", "Autoregistro")}
           {nav_item("/difusion", "◉", "Difusión")}
+
+          {personal_nav}
 
           <div class="nav-section">SISTEMA</div>
           {nav_item("/configuracion_empresa", "⚙", "Configuración")}
@@ -125,7 +140,10 @@ def html_layout(titulo, contenido):
           <a href="/" class="mobile-brand">
             <span class="mobile-logo-shell"><img src="{NRTECH_LOGO_DATA_URI}" class="mobile-logo-img" alt="NR Tech"></span>
           </a>
-          <a href="/crear" class="mobile-action">＋ Orden</a>
+          <div style="display:flex;gap:7px;align-items:center">
+            {f'<a href="/personal" class="mobile-action" style="background:#4f46e5">🔒</a>' if PERSONAL_FINANCE_ENABLED else ''}
+            <a href="/crear" class="mobile-action">＋ Orden</a>
+          </div>
         </div>
         <div class="mobile-menu">
           {nav_item("/", "⌂", "Inicio", ["/"])}
@@ -666,6 +684,192 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("ALTER TABLE solicitudes_ingreso ADD COLUMN IF NOT EXISTS completado BOOLEAN DEFAULT FALSE;")
     cur.execute("UPDATE solicitudes_ingreso SET fecha_vencimiento=COALESCE(fecha_vencimiento, fecha_creacion + INTERVAL '48 hours') WHERE fecha_vencimiento IS NULL;")
 
+
+
+    # -----------------------------------------------------------------
+    # PROYECTO LIBERTAD / FINANZAS PERSONALES
+    # Tablas totalmente separadas de ventas, facturación, gastos_taller
+    # y cualquier información usada para DGI.
+    # -----------------------------------------------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_config (
+        id INTEGER PRIMARY KEY,
+        fecha_inicio DATE NOT NULL DEFAULT CURRENT_DATE,
+        moneda_base TEXT NOT NULL DEFAULT 'UYU',
+        nota_corte TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+    cur.execute("""
+        INSERT INTO pf_config(id,fecha_inicio,moneda_base,nota_corte)
+        VALUES(1,DATE '2026-08-25','UYU',
+               'Corte inicial: cuentas corrientes/fijas al día. Las deudas futuras se cargan por separado.')
+        ON CONFLICT (id) DO NOTHING
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_cuentas (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        tipo TEXT NOT NULL DEFAULT 'Cuenta',
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        saldo_inicial NUMERIC NOT NULL DEFAULT 0,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_tarjetas (
+        id SERIAL PRIMARY KEY,
+        nombre TEXT NOT NULL,
+        banco TEXT,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        dia_cierre INTEGER,
+        dia_vencimiento INTEGER,
+        limite_credito NUMERIC,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+    # Compatibilidad con bases creadas por la V16.0 base.
+    cur.execute("ALTER TABLE pf_tarjetas ADD COLUMN IF NOT EXISTS limite_credito NUMERIC;")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_obligaciones (
+        id SERIAL PRIMARY KEY,
+        concepto TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        categoria TEXT,
+        monto NUMERIC NOT NULL DEFAULT 0,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        dia_vencimiento INTEGER,
+        fecha_inicio DATE,
+        fecha_fin DATE,
+        cuotas_total INTEGER,
+        cuota_actual INTEGER,
+        saldo_deuda NUMERIC,
+        incluir_proyeccion BOOLEAN NOT NULL DEFAULT TRUE,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_ingresos_recurrentes (
+        id SERIAL PRIMARY KEY,
+        concepto TEXT NOT NULL,
+        monto NUMERIC NOT NULL DEFAULT 0,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        dia_cobro INTEGER,
+        fecha_inicio DATE,
+        fecha_fin DATE,
+        activo BOOLEAN NOT NULL DEFAULT TRUE,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_compras_cuotas (
+        id SERIAL PRIMARY KEY,
+        fecha_compra DATE NOT NULL,
+        descripcion TEXT NOT NULL,
+        categoria TEXT,
+        tarjeta_id INTEGER NOT NULL REFERENCES pf_tarjetas(id),
+        monto_total NUMERIC NOT NULL,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        cuotas_total INTEGER NOT NULL,
+        fecha_primer_vencimiento DATE,
+        activa BOOLEAN NOT NULL DEFAULT TRUE,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_cuotas (
+        id SERIAL PRIMARY KEY,
+        compra_id INTEGER NOT NULL REFERENCES pf_compras_cuotas(id) ON DELETE CASCADE,
+        numero_cuota INTEGER NOT NULL,
+        fecha_vencimiento DATE NOT NULL,
+        monto NUMERIC NOT NULL,
+        estado TEXT NOT NULL DEFAULT 'Pendiente',
+        fecha_pago DATE,
+        fecha_alta TIMESTAMP DEFAULT NOW(),
+        UNIQUE(compra_id,numero_cuota)
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_movimientos (
+        id SERIAL PRIMARY KEY,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+        tipo TEXT NOT NULL,
+        descripcion TEXT NOT NULL,
+        categoria TEXT,
+        monto NUMERIC NOT NULL,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        cuenta_id INTEGER REFERENCES pf_cuentas(id),
+        tarjeta_id INTEGER REFERENCES pf_tarjetas(id),
+        medio_pago TEXT,
+        impacto_presupuesto TEXT NOT NULL DEFAULT 'Neutro',
+        signo_saldo INTEGER NOT NULL DEFAULT 0,
+        origen TEXT NOT NULL DEFAULT 'Manual',
+        referencia_tipo TEXT,
+        referencia_id INTEGER,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_pagos_obligaciones (
+        id SERIAL PRIMARY KEY,
+        obligacion_id INTEGER NOT NULL REFERENCES pf_obligaciones(id) ON DELETE CASCADE,
+        periodo DATE NOT NULL,
+        fecha_pago DATE NOT NULL DEFAULT CURRENT_DATE,
+        monto NUMERIC NOT NULL,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        cuenta_id INTEGER REFERENCES pf_cuentas(id),
+        movimiento_id INTEGER REFERENCES pf_movimientos(id) ON DELETE SET NULL,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW(),
+        UNIQUE(obligacion_id,periodo)
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_nrtech_movimientos (
+        id SERIAL PRIMARY KEY,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+        tipo TEXT NOT NULL,
+        monto NUMERIC NOT NULL,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        cuenta_personal_id INTEGER REFERENCES pf_cuentas(id),
+        movimiento_personal_id INTEGER REFERENCES pf_movimientos(id) ON DELETE SET NULL,
+        descripcion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_transferencias (
+        id SERIAL PRIMARY KEY,
+        fecha DATE NOT NULL DEFAULT CURRENT_DATE,
+        cuenta_origen_id INTEGER NOT NULL REFERENCES pf_cuentas(id),
+        cuenta_destino_id INTEGER NOT NULL REFERENCES pf_cuentas(id),
+        monto NUMERIC NOT NULL,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        movimiento_salida_id INTEGER REFERENCES pf_movimientos(id) ON DELETE SET NULL,
+        movimiento_entrada_id INTEGER REFERENCES pf_movimientos(id) ON DELETE SET NULL,
+        descripcion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
 
     # Configuración comercial/fiscal de NR Tech.
     cur.execute("""
@@ -6171,6 +6375,1182 @@ def revisar_solicitud(sid):
         </div>
       </form>
     """))
+
+
+# ============================================================================
+# 🔒 PROYECTO LIBERTAD · FINANZAS PERSONALES
+# No escribe en ventas, comprobantes, gastos_taller ni tablas fiscales NR Tech.
+# ============================================================================
+
+def _pf_guard():
+    if not session.get("login"):
+        return redirect("/login")
+    if not PERSONAL_FINANCE_ENABLED:
+        flash("El módulo de Finanzas Personales está desactivado.","error")
+        return redirect("/")
+    return None
+
+
+def _pf_money(valor, moneda="UYU", decimales=0):
+    try:
+        n=float(valor or 0)
+    except Exception:
+        n=0.0
+    if moneda=="USD":
+        return f"USD {n:,.2f}"
+    return f"$ {n:,.{decimales}f}"
+
+
+def _pf_month_bounds(anio, mes):
+    inicio=datetime.date(anio,mes,1)
+    ultimo=calendar.monthrange(anio,mes)[1]
+    fin=datetime.date(anio,mes,ultimo)
+    return inicio,fin
+
+
+def _pf_add_months(fecha, meses):
+    total=fecha.year*12+(fecha.month-1)+meses
+    anio=total//12
+    mes=total%12+1
+    dia=min(fecha.day,calendar.monthrange(anio,mes)[1])
+    return datetime.date(anio,mes,dia)
+
+
+def _pf_safe_date(anio,mes,dia):
+    dia=max(1,min(int(dia or 1),calendar.monthrange(anio,mes)[1]))
+    return datetime.date(anio,mes,dia)
+
+
+def _pf_first_card_due(fecha_compra, dia_cierre, dia_vencimiento):
+    """Estimación por ciclo: compra antes/día de cierre entra en ese cierre;
+    compra posterior entra en el cierre del mes siguiente."""
+    cierre=int(dia_cierre)
+    vence=int(dia_vencimiento)
+    cierre_actual=_pf_safe_date(fecha_compra.year,fecha_compra.month,cierre)
+    if fecha_compra<=cierre_actual:
+        cierre_fecha=cierre_actual
+    else:
+        sig=_pf_add_months(datetime.date(fecha_compra.year,fecha_compra.month,1),1)
+        cierre_fecha=_pf_safe_date(sig.year,sig.month,cierre)
+
+    # Si el día de vencimiento es posterior al cierre, estimamos vencimiento
+    # dentro del mismo mes; si es anterior/igual, en el mes siguiente.
+    if vence>cierre:
+        return _pf_safe_date(cierre_fecha.year,cierre_fecha.month,vence)
+    sig=_pf_add_months(datetime.date(cierre_fecha.year,cierre_fecha.month,1),1)
+    return _pf_safe_date(sig.year,sig.month,vence)
+
+
+def _pf_generate_installments(total, cuotas, primera_fecha):
+    total=Decimal(str(total)).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
+    cuotas=max(1,int(cuotas))
+    base=(total/Decimal(cuotas)).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
+    salida=[]
+    acumulado=Decimal("0")
+    for i in range(1,cuotas+1):
+        monto=base if i<cuotas else total-acumulado
+        fecha=_pf_add_months(primera_fecha,i-1)
+        salida.append((i,fecha,monto))
+        acumulado+=monto
+    return salida
+
+
+def _pf_nav():
+    # Cuatro pantallas principales. Las configuraciones internas cuelgan de Configuración.
+    return """
+    <div class='pf-nav'>
+      <a href='/personal'>📊 Inicio</a>
+      <a href='/personal/movimiento/nuevo'>＋ Movimiento</a>
+      <a href='/personal/proximos'>📅 Próximos pagos</a>
+      <a href='/personal/configuracion'>⚙️ Configuración</a>
+    </div>
+    <style>
+      .pf-nav{display:flex;gap:7px;overflow-x:auto;padding:2px 0 14px;scrollbar-width:none}
+      .pf-nav::-webkit-scrollbar{display:none}
+      .pf-nav a{flex:0 0 auto;text-decoration:none;background:#fff;border:1px solid #dbe4ef;
+        color:#334155;padding:8px 11px;border-radius:10px;font-size:12px;font-weight:760;
+        box-shadow:0 3px 9px rgba(15,23,42,.04)}
+      .pf-nav a:hover{border-color:#a5b4fc;background:#f8faff;color:#4338ca}
+    </style>
+    """
+
+
+def _pf_account_options(cuentas, moneda):
+    filtradas=[c for c in cuentas if c.get("moneda")==moneda]
+    return "<option value=''>Elegir cuenta</option>"+"".join(
+        f"<option value='{c['id']}'>{escape(c['nombre'])} · {c['moneda']}</option>" for c in filtradas
+    )
+
+
+def _pf_projection_month(cur, anio, mes):
+    inicio,fin=_pf_month_bounds(anio,mes)
+    periodo=inicio
+    cur.execute("""
+      SELECT o.moneda,COALESCE(SUM(o.monto),0) total
+      FROM pf_obligaciones o
+      WHERE o.activa=TRUE AND o.incluir_proyeccion=TRUE
+        AND o.tipo<>'Deuda sin fecha'
+        AND (o.fecha_inicio IS NULL OR o.fecha_inicio<=%s)
+        AND (o.fecha_fin IS NULL OR o.fecha_fin>=%s)
+        AND NOT EXISTS (
+          SELECT 1 FROM pf_pagos_obligaciones p
+          WHERE p.obligacion_id=o.id AND p.periodo=%s
+        )
+      GROUP BY o.moneda
+    """,(fin,inicio,periodo))
+    obligaciones={r["moneda"]:float(r["total"] or 0) for r in cur.fetchall()}
+
+    cur.execute("""
+      SELECT pc.moneda,COALESCE(SUM(c.monto),0) total
+      FROM pf_cuotas c JOIN pf_compras_cuotas pc ON pc.id=c.compra_id
+      WHERE pc.activa=TRUE AND c.estado='Pendiente'
+        AND c.fecha_vencimiento BETWEEN %s AND %s
+      GROUP BY pc.moneda
+    """,(inicio,fin))
+    cuotas={r["moneda"]:float(r["total"] or 0) for r in cur.fetchall()}
+
+    cur.execute("""
+      SELECT moneda,COALESCE(SUM(monto),0) total
+      FROM pf_ingresos_recurrentes
+      WHERE activo=TRUE
+        AND (fecha_inicio IS NULL OR fecha_inicio<=%s)
+        AND (fecha_fin IS NULL OR fecha_fin>=%s)
+      GROUP BY moneda
+    """,(fin,inicio))
+    ingresos={r["moneda"]:float(r["total"] or 0) for r in cur.fetchall()}
+
+    out={}
+    for moneda in ("UYU","USD"):
+        comprometido=obligaciones.get(moneda,0)+cuotas.get(moneda,0)
+        previsto=ingresos.get(moneda,0)
+        out[moneda]={
+            "obligaciones":obligaciones.get(moneda,0),
+            "cuotas":cuotas.get(moneda,0),
+            "comprometido":comprometido,
+            "ingresos":previsto,
+            "resultado":previsto-comprometido
+        }
+    return out
+
+
+@app.get("/personal")
+def personal_inicio():
+    g=_pf_guard()
+    if g:return g
+    hoy=datetime.date.today()
+    inicio,fin=_pf_month_bounds(hoy.year,hoy.month)
+    proximo=_pf_add_months(datetime.date(hoy.year,hoy.month,1),1)
+
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_config WHERE id=1")
+    cfg=cur.fetchone() or {}
+
+    # Disponible real por cuentas, separado por moneda. No hay conversión automática.
+    cur.execute("""
+      SELECT c.id,c.nombre,c.tipo,c.moneda,c.saldo_inicial,
+             COALESCE(SUM(CASE WHEN m.moneda=c.moneda THEN m.signo_saldo*m.monto ELSE 0 END),0) movs
+      FROM pf_cuentas c
+      LEFT JOIN pf_movimientos m ON m.cuenta_id=c.id
+      WHERE c.activa=TRUE
+      GROUP BY c.id
+      ORDER BY c.moneda,c.nombre
+    """)
+    cuentas=cur.fetchall()
+    disponible={"UYU":0.0,"USD":0.0}
+    for c in cuentas:
+        disponible[c["moneda"]]=disponible.get(c["moneda"],0)+float(c["saldo_inicial"] or 0)+float(c["movs"] or 0)
+
+    cur.execute("""
+      SELECT moneda,impacto_presupuesto,COALESCE(SUM(monto),0) total
+      FROM pf_movimientos
+      WHERE fecha BETWEEN %s AND %s
+      GROUP BY moneda,impacto_presupuesto
+    """,(inicio,fin))
+    mov_mes=cur.fetchall()
+    ingresos={"UYU":0.0,"USD":0.0};gastos={"UYU":0.0,"USD":0.0}
+    for r in mov_mes:
+        if r["impacto_presupuesto"]=="Ingreso":ingresos[r["moneda"]]=float(r["total"] or 0)
+        if r["impacto_presupuesto"]=="Gasto":gastos[r["moneda"]]=float(r["total"] or 0)
+
+    # Salidas reales de dinero: signo negativo, aunque el consumo haya sido registrado antes con crédito.
+    cur.execute("""
+      SELECT moneda,COALESCE(SUM(ABS(signo_saldo*monto)),0) total
+      FROM pf_movimientos
+      WHERE fecha BETWEEN %s AND %s AND signo_saldo<0
+      GROUP BY moneda
+    """,(inicio,fin))
+    salidas={"UYU":0.0,"USD":0.0}
+    for r in cur.fetchall():salidas[r["moneda"]]=float(r["total"] or 0)
+
+    proj_actual=_pf_projection_month(cur,hoy.year,hoy.month)
+    proj=_pf_projection_month(cur,proximo.year,proximo.month)
+
+    cur.execute("""
+      SELECT moneda,COALESCE(SUM(saldo_deuda),0) total
+      FROM pf_obligaciones
+      WHERE activa=TRUE AND saldo_deuda IS NOT NULL
+      GROUP BY moneda
+    """)
+    deuda={"UYU":0.0,"USD":0.0}
+    for r in cur.fetchall():deuda[r["moneda"]]=float(r["total"] or 0)
+    cur.execute("""
+      SELECT pc.moneda,COALESCE(SUM(c.monto),0) total
+      FROM pf_cuotas c JOIN pf_compras_cuotas pc ON pc.id=c.compra_id
+      WHERE c.estado='Pendiente' AND pc.activa=TRUE
+      GROUP BY pc.moneda
+    """)
+    for r in cur.fetchall():deuda[r["moneda"]]=deuda.get(r["moneda"],0)+float(r["total"] or 0)
+
+    cur.execute("""
+      SELECT moneda,
+             COALESCE(SUM(CASE WHEN tipo='Retiro extraordinario' THEN monto ELSE 0 END),0) retiros,
+             COALESCE(SUM(CASE WHEN tipo='Devolución' THEN monto ELSE 0 END),0) devoluciones
+      FROM pf_nrtech_movimientos GROUP BY moneda
+    """)
+    saldo_nr={"UYU":0.0,"USD":0.0}
+    for r in cur.fetchall():
+        saldo_nr[r["moneda"]]=float(r["retiros"] or 0)-float(r["devoluciones"] or 0)
+
+    cur.execute("""
+      SELECT m.*,c.nombre cuenta,t.nombre tarjeta
+      FROM pf_movimientos m
+      LEFT JOIN pf_cuentas c ON c.id=m.cuenta_id
+      LEFT JOIN pf_tarjetas t ON t.id=m.tarjeta_id
+      ORDER BY m.fecha DESC,m.id DESC LIMIT 8
+    """)
+    ultimos_movimientos=cur.fetchall()
+
+    # Próximos 5 compromisos estimados.
+    proximos=[]
+    limite=hoy+datetime.timedelta(days=45)
+    cur.execute("""
+      SELECT id,concepto,tipo,monto,moneda,dia_vencimiento,fecha_inicio,fecha_fin
+      FROM pf_obligaciones WHERE activa=TRUE AND tipo<>'Deuda sin fecha'
+      ORDER BY concepto
+    """)
+    for o in cur.fetchall():
+        for delta in (0,1,2):
+            m=_pf_add_months(datetime.date(hoy.year,hoy.month,1),delta)
+            _,mf=_pf_month_bounds(m.year,m.month)
+            if o["fecha_inicio"] and o["fecha_inicio"]>mf:continue
+            if o["fecha_fin"] and o["fecha_fin"]<m:continue
+            due=_pf_safe_date(m.year,m.month,o["dia_vencimiento"] or 1)
+            if hoy<=due<=limite:
+                proximos.append((due,o["concepto"],float(o["monto"] or 0),o["moneda"],"Obligación"))
+    cur.execute("""
+      SELECT c.fecha_vencimiento,c.monto,pc.moneda,pc.descripcion,c.numero_cuota,pc.cuotas_total
+      FROM pf_cuotas c JOIN pf_compras_cuotas pc ON pc.id=c.compra_id
+      WHERE c.estado='Pendiente' AND c.fecha_vencimiento BETWEEN %s AND %s
+    """,(hoy,limite))
+    for q in cur.fetchall():
+        proximos.append((q["fecha_vencimiento"],f'{q["descripcion"]} · {q["numero_cuota"]}/{q["cuotas_total"]}',
+                         float(q["monto"] or 0),q["moneda"],"Tarjeta"))
+    proximos=sorted(proximos,key=lambda x:x[0])[:5]
+    con.close()
+
+    if proj["UYU"]["comprometido"]<=0:
+        semaforo="⚪ Sin compromisos cargados"
+        sem_color="#64748b"
+    elif proj["UYU"]["resultado"]>=0:
+        semaforo=f"🟢 Cubierto · margen {_pf_money(proj['UYU']['resultado'])}"
+        sem_color="#166534"
+    else:
+        semaforo=f"🔴 Faltan {_pf_money(abs(proj['UYU']['resultado']))}"
+        sem_color="#b91c1c"
+
+    prox_html="".join(
+        f"""<div class='pf-next'><span><b>{d.strftime('%d/%m')}</b> · {escape(desc)}
+        <small>{escape(tipo)}</small></span><strong>{_pf_money(monto,mon)}</strong></div>"""
+        for d,desc,monto,mon,tipo in proximos
+    ) or "<div class='pf-empty'>Todavía no cargamos próximos pagos.</div>"
+
+    mov_html="".join(
+        f"""<div class='pf-next'>
+          <span><b>{m['fecha'].strftime('%d/%m')}</b> · {escape(m['descripcion'])}
+            <small>{escape(str(m.get('categoria') or m.get('tipo') or ''))}{' · '+escape(str(m.get('tarjeta'))) if m.get('tarjeta') else ''}</small>
+          </span>
+          <strong style='color:{'#166534' if m.get('impacto_presupuesto')=='Ingreso' else '#b45309' if m.get('impacto_presupuesto')=='Gasto' else '#475569'}'>{_pf_money(m['monto'],m['moneda'])}</strong>
+        </div>""" for m in ultimos_movimientos
+    ) or "<div class='pf-empty'>Todavía no hay movimientos personales.</div>"
+
+    return html_layout("Mis Finanzas · Proyecto Libertad",f"""
+      {_pf_nav()}
+      <style>
+        .pf-hero{{background:linear-gradient(125deg,#111827,#1e1b4b 68%,#164e63);color:white;
+          border-radius:21px;padding:22px;box-shadow:0 18px 40px rgba(15,23,42,.22);
+          position:relative;overflow:hidden;margin-bottom:14px}}
+        .pf-hero:after{{content:"";position:absolute;width:210px;height:210px;border-radius:50%;
+          background:radial-gradient(circle,rgba(34,211,238,.22),transparent 67%);right:-50px;top:-75px}}
+        .pf-hero h2{{margin:0 0 5px;font-size:25px}}.pf-hero p{{margin:0;color:#cbd5e1;font-size:12px}}
+        .pf-cut{{margin-top:12px;font-size:11px;color:#a5f3fc}}
+        .pf-grid{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:13px 0}}
+        .pf-kpi{{background:#fff;border:1px solid #dbe4ef;border-radius:15px;padding:14px;
+          box-shadow:0 7px 20px rgba(15,23,42,.06)}}
+        .pf-kpi small{{color:#64748b;font-size:10px;text-transform:uppercase;letter-spacing:.5px;font-weight:800}}
+        .pf-kpi .v{{font-size:23px;font-weight:900;letter-spacing:-.5px;margin-top:4px}}
+        .pf-two{{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}}
+        .pf-box{{background:white;border:1px solid #dbe4ef;border-radius:16px;padding:16px;box-shadow:0 7px 20px rgba(15,23,42,.055)}}
+        .pf-box h3{{margin:0 0 11px;font-size:14px}}
+        .pf-next{{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #edf2f7;font-size:12px}}
+        .pf-next:last-child{{border-bottom:0}}.pf-next small{{display:block;color:#94a3b8}}
+        .pf-empty{{color:#94a3b8;font-size:12px;padding:14px;text-align:center}}
+        .pf-actions{{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:14px}}
+        .pf-actions a{{text-decoration:none;color:#172554;background:linear-gradient(145deg,#fff,#eff6ff);
+          border:1px solid #bfdbfe;padding:12px;border-radius:13px;font-size:12px;font-weight:800;text-align:center}}
+        @media(max-width:1000px){{.pf-grid{{grid-template-columns:repeat(2,1fr)}}.pf-two{{grid-template-columns:1fr}}}}
+        @media(max-width:600px){{.pf-grid{{grid-template-columns:repeat(2,1fr);gap:7px}}.pf-kpi{{padding:11px}}.pf-kpi .v{{font-size:19px}}.pf-actions{{grid-template-columns:1fr}}}}
+      </style>
+
+      <section class='pf-hero'>
+        <div style='position:relative;z-index:2'>
+          <div style='font-size:10px;letter-spacing:1.8px;color:#67e8f9;font-weight:850'>🔒 ÁREA PRIVADA</div>
+          <h2>Proyecto Libertad</h2>
+          <p>Tu realidad personal separada de NR Tech: lo que entra, lo que gastás y lo que viene.</p>
+          <div class='pf-cut'>Corte inicial: {cfg.get("fecha_inicio").strftime("%d/%m/%Y") if cfg.get("fecha_inicio") else "25/08/2026"} · cuentas corrientes al día.</div>
+        </div>
+      </section>
+
+      <div class='pf-grid'>
+        <div class='pf-kpi'><small>REAL · Disponible hoy</small><div class='v'>{_pf_money(disponible.get("UYU",0))}</div></div>
+        <div class='pf-kpi'><small>REAL · Ingresos del mes</small><div class='v' style='color:#166534'>{_pf_money(ingresos.get("UYU",0))}</div></div>
+        <div class='pf-kpi'><small>REAL · Gastado este mes</small><div class='v' style='color:#b45309'>{_pf_money(salidas.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Consumo registrado: {_pf_money(gastos.get("UYU",0))}</div></div>
+        <div class='pf-kpi'><small>PENDIENTE · Este mes</small><div class='v' style='color:#b91c1c'>{_pf_money(proj_actual["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Solo obligaciones todavía no pagadas.</div></div>
+        <div class='pf-kpi'><small>PROYECTADO · Próximo mes</small><div class='v' style='color:#4338ca'>{_pf_money(proj["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Fijos + deudas + cuotas conocidas.</div></div>
+        <div class='pf-kpi'><small>Deuda total confirmada</small><div class='v' style='color:#b91c1c'>{_pf_money(deuda.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Incluye deudas sin fecha; solo saldos confirmados.</div></div>
+      </div>
+
+      <div class='pf-two'>
+        <div class='pf-box'>
+          <h3>📅 Próximo mes · {proximo.strftime("%m/%Y")}</h3>
+          <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>
+            <div><small style='color:#64748b'>Fijos/deudas</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["obligaciones"])}</div></div>
+            <div><small style='color:#64748b'>Cuotas tarjetas</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["cuotas"])}</div></div>
+            <div><small style='color:#64748b'>Total comprometido</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["comprometido"])}</div></div>
+          </div>
+          <div style='margin-top:12px;background:#f8fafc;border-radius:11px;padding:11px'>
+            <div style='font-size:11px;color:#64748b'>Ingresos previstos cargados: {_pf_money(proj["UYU"]["ingresos"])}</div>
+            <div style='font-size:14px;font-weight:900;color:{sem_color};margin-top:3px'>{semaforo}</div>
+          </div>
+          <div class='pf-actions'>
+            <a href='/personal/movimiento/nuevo'>＋ Cargar gasto/ingreso</a>
+            <a href='/personal/proximos'>Ver proyección 12 meses</a>
+            <a href='/personal/nrtech'>NR Tech ↔ Personal</a>
+          </div>
+        </div>
+
+        <div class='pf-box'>
+          <h3>⏰ Lo próximo que tenés que pagar</h3>
+          {prox_html}
+          <a href='/personal/proximos' style='display:inline-block;margin-top:10px;font-size:11px;font-weight:bold'>Ver todos →</a>
+        </div>
+      </div>
+
+      <div class='pf-two' style='margin-top:12px'>
+        <div class='pf-box'>
+          <h3>🧾 Últimos movimientos</h3>
+          {mov_html}
+          <a href='/personal/movimiento/nuevo' style='display:inline-block;margin-top:10px;font-size:11px;font-weight:bold'>＋ Agregar movimiento</a>
+        </div>
+        <div class='pf-box'>
+          <h3>💡 Lectura rápida</h3>
+          <p style='font-size:12px;color:#64748b;margin-top:0'>La proyección compara compromisos futuros contra <b>ingresos recurrentes confirmados</b>. Los retiros de NR Tech se muestran aparte para medir cuánto depende hoy tu economía del taller.</p>
+          <a href='/personal/obligaciones#ingresos' style='font-size:11px;font-weight:bold'>Configurar ingresos previstos →</a>
+        </div>
+      </div>
+
+      <div class='pf-box' style='margin-top:12px'>
+        <h3>🏢 Cuenta corriente con NR Tech</h3>
+        <div style='display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap'>
+          <div>
+            <small style='color:#64748b'>Retiros extraordinarios pendientes de compensar</small>
+            <div style='font-size:22px;font-weight:900;color:#7c3aed'>{_pf_money(saldo_nr.get("UYU",0))}</div>
+          </div>
+          <div style='font-size:11px;color:#64748b;max-width:520px'>
+            Esta cuenta es solo de control personal. <b>No se registra como gasto fiscal del taller</b> y no modifica facturación ni información para DGI.
+          </div>
+        </div>
+      </div>
+
+      <div style='position:fixed;right:22px;bottom:24px;z-index:50'>
+        <div id='pfFabMenu' style='display:none;position:absolute;right:0;bottom:58px;width:205px;background:white;border:1px solid #dbe4ef;border-radius:14px;padding:8px;box-shadow:0 18px 45px rgba(15,23,42,.22)'>
+          <a href='/personal/movimiento/nuevo?tipo=Gasto' style='display:block;padding:9px;text-decoration:none'>💸 Gasto</a>
+          <a href='/personal/movimiento/nuevo?tipo=Ingreso' style='display:block;padding:9px;text-decoration:none'>💰 Ingreso</a>
+          <a href='/personal/movimiento/nuevo?tipo=Gasto&medio=Crédito' style='display:block;padding:9px;text-decoration:none'>💳 Compra en cuotas</a>
+          <a href='/personal/proximos' style='display:block;padding:9px;text-decoration:none'>✅ Pagar vencimiento</a>
+          <a href='/personal/transferencia' style='display:block;padding:9px;text-decoration:none'>↔ Transferencia</a>
+          <a href='/personal/nrtech' style='display:block;padding:9px;text-decoration:none'>🏢 Retiro NR Tech</a>
+        </div>
+        <button type='button' onclick="var m=document.getElementById('pfFabMenu');m.style.display=m.style.display==='none'?'block':'none'" style='width:54px;height:54px;border:0;border-radius:50%;background:#4f46e5;color:white;font-size:28px;box-shadow:0 12px 30px rgba(79,70,229,.35);cursor:pointer'>＋</button>
+      </div>
+    """)
+
+
+@app.route("/personal/movimiento/nuevo",methods=["GET","POST"])
+def personal_movimiento_nuevo():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_cuentas WHERE activa=TRUE ORDER BY moneda,nombre")
+    cuentas=cur.fetchall()
+    cur.execute("SELECT * FROM pf_tarjetas WHERE activa=TRUE ORDER BY nombre")
+    tarjetas=cur.fetchall()
+    pref_tipo=request.args.get("tipo","Gasto").strip()
+    pref_medio=request.args.get("medio","Efectivo").strip()
+    if pref_tipo not in ("Gasto","Ingreso"): pref_tipo="Gasto"
+    if pref_medio not in ("Efectivo","Débito","Transferencia","Crédito","Otro"): pref_medio="Efectivo"
+
+    if request.method=="POST":
+        tipo=request.form.get("tipo","Gasto").strip()
+        descripcion=request.form.get("descripcion","").strip()
+        categoria=request.form.get("categoria","Otros").strip()
+        moneda=request.form.get("moneda","UYU").strip().upper()
+        medio=request.form.get("medio_pago","Efectivo").strip()
+        fecha_s=request.form.get("fecha","").strip()
+        cuenta_id=request.form.get("cuenta_id") or None
+        tarjeta_id=request.form.get("tarjeta_id") or None
+        observacion=request.form.get("observacion","").strip()
+        try:fecha=datetime.date.fromisoformat(fecha_s) if fecha_s else datetime.date.today()
+        except Exception:fecha=datetime.date.today()
+        try:monto=Decimal((request.form.get("monto") or "0").replace(",",".")).quantize(Decimal("0.01"))
+        except Exception:monto=Decimal("0")
+        try:cuotas=max(1,int(request.form.get("cuotas") or 1))
+        except Exception:cuotas=1
+
+        if tipo not in ("Ingreso","Gasto") or not descripcion or monto<=0 or moneda not in ("UYU","USD"):
+            con.close();flash("Revisá tipo, descripción, moneda y monto.","error");return redirect("/personal/movimiento/nuevo")
+
+        if tipo=="Ingreso":
+            if not cuenta_id:
+                con.close();flash("Elegí la cuenta donde realmente entró el dinero.","error");return redirect("/personal/movimiento/nuevo?tipo=Ingreso")
+            signo=1
+            impacto="Ingreso"
+            origen="Manual"
+            cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                           medio_pago,impacto_presupuesto,signo_saldo,origen,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                        (fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,medio,impacto,signo,origen,observacion))
+            con.commit();con.close();flash("Ingreso registrado.","success");return redirect("/personal")
+
+        # Gasto con crédito: registra el consumo HOY, no baja saldo hoy y crea cuotas futuras.
+        if medio=="Crédito":
+            if not tarjeta_id:
+                con.close();flash("Elegí la tarjeta de crédito.","error");return redirect("/personal/movimiento/nuevo")
+            cur.execute("SELECT * FROM pf_tarjetas WHERE id=%s AND activa=TRUE",(tarjeta_id,))
+            t=cur.fetchone()
+            if not t or not t.get("dia_cierre") or not t.get("dia_vencimiento"):
+                con.close();flash("Esa tarjeta necesita día de cierre y vencimiento para proyectar las cuotas.","error");return redirect("/personal/tarjetas")
+            primera=_pf_first_card_due(fecha,int(t["dia_cierre"]),int(t["dia_vencimiento"]))
+            cur.execute("""INSERT INTO pf_compras_cuotas(fecha_compra,descripcion,categoria,tarjeta_id,monto_total,
+                           moneda,cuotas_total,fecha_primer_vencimiento,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                        (fecha,descripcion,categoria,tarjeta_id,monto,moneda,cuotas,primera,observacion))
+            cid=cur.fetchone()["id"]
+            for numero,vence,valor in _pf_generate_installments(monto,cuotas,primera):
+                cur.execute("""INSERT INTO pf_cuotas(compra_id,numero_cuota,fecha_vencimiento,monto)
+                               VALUES(%s,%s,%s,%s)""",(cid,numero,vence,valor))
+            cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,tarjeta_id,
+                           medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id,observacion)
+                           VALUES(%s,'Gasto',%s,%s,%s,%s,%s,'Crédito','Gasto',0,'Compra crédito','compra_cuotas',%s,%s)""",
+                        (fecha,descripcion,categoria,monto,moneda,tarjeta_id,cid,observacion))
+            con.commit();con.close()
+            flash(f"Compra registrada y proyectada en {cuotas} cuota/s.","success")
+            return redirect("/personal/proximos")
+
+        # Efectivo/débito/transferencia: gasto y salida de dinero hoy.
+        if not cuenta_id:
+            con.close();flash("Elegí la cuenta o efectivo desde donde salió el dinero.","error");return redirect("/personal/movimiento/nuevo")
+        cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                       medio_pago,impacto_presupuesto,signo_saldo,origen,observacion)
+                       VALUES(%s,'Gasto',%s,%s,%s,%s,%s,%s,'Gasto',-1,'Manual',%s)""",
+                    (fecha,descripcion,categoria,monto,moneda,cuenta_id,medio,observacion))
+        con.commit();con.close();flash("Gasto registrado.","success");return redirect("/personal")
+
+    con.close()
+    cuentas_opts="<option value=''>Sin cuenta / cargar después</option>"+"".join(
+        f"<option value='{c['id']}'>{escape(c['nombre'])} · {c['moneda']}</option>" for c in cuentas)
+    tarjetas_opts="<option value=''>Elegir tarjeta</option>"+"".join(
+        f"<option value='{t['id']}'>{escape(t['nombre'])} · {t['moneda']}</option>" for t in tarjetas)
+    return html_layout("Nuevo movimiento personal",f"""
+      {_pf_nav()}
+      {card_html(f"""
+        <h2 style='margin-top:0'>＋ Registrar movimiento</h2>
+        <p style='color:#64748b'>Pensado para cargarlo rápido desde el celular.</p>
+        <div style='display:flex;gap:7px;flex-wrap:wrap;margin-bottom:10px'>
+          <a href='/personal/movimiento/nuevo?tipo=Gasto' style='text-decoration:none;background:#fff7ed;padding:7px 10px;border-radius:9px;font-size:11px;font-weight:bold'>💸 Gasto</a>
+          <a href='/personal/movimiento/nuevo?tipo=Ingreso' style='text-decoration:none;background:#f0fdf4;padding:7px 10px;border-radius:9px;font-size:11px;font-weight:bold'>💰 Ingreso</a>
+          <a href='/personal/movimiento/nuevo?tipo=Gasto&medio=Crédito' style='text-decoration:none;background:#eef2ff;padding:7px 10px;border-radius:9px;font-size:11px;font-weight:bold'>💳 Compra en cuotas</a>
+          <a href='/personal/transferencia' style='text-decoration:none;background:#f8fafc;padding:7px 10px;border-radius:9px;font-size:11px;font-weight:bold'>↔ Transferencia</a>
+          <a href='/personal/nrtech' style='text-decoration:none;background:#faf5ff;padding:7px 10px;border-radius:9px;font-size:11px;font-weight:bold'>🏢 Retiro NR Tech</a>
+        </div>
+        <form method='post'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px'>
+            <div><label>Tipo</label><select name='tipo' style='width:100%;padding:10px'><option {"selected" if pref_tipo=="Gasto" else ""}>Gasto</option><option {"selected" if pref_tipo=="Ingreso" else ""}>Ingreso</option></select></div>
+            <div><label>Fecha</label><input type='date' name='fecha' value='{datetime.date.today().isoformat()}' style='width:100%;padding:10px'></div>
+            <div><label>Monto</label><input name='monto' inputmode='decimal' required placeholder='Ej: 80' style='width:100%;padding:10px'></div>
+            <div><label>Moneda</label><select name='moneda' style='width:100%;padding:10px'><option>UYU</option><option>USD</option></select></div>
+          </div>
+          <label style='display:block;margin-top:10px'>Qué fue *</label>
+          <input name='descripcion' required placeholder='Ej: Alfajor' style='width:100%;padding:10px'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:10px'>
+            <div><label>Categoría</label><select name='categoria' style='width:100%;padding:10px'>
+              <option>Comida / gusto</option><option>Supermercado</option><option>Transporte</option><option>Salud</option>
+              <option>Hogar</option><option>Bebé / familia</option><option>Salidas</option><option>Servicios</option>
+              <option>Deudas</option><option>Otros</option>
+            </select></div>
+            <div><label>Medio de pago</label><select name='medio_pago' id='pfMedio' onchange='pfCredito()' style='width:100%;padding:10px'>
+              <option {"selected" if pref_medio=="Efectivo" else ""}>Efectivo</option><option {"selected" if pref_medio=="Débito" else ""}>Débito</option><option {"selected" if pref_medio=="Transferencia" else ""}>Transferencia</option><option {"selected" if pref_medio=="Crédito" else ""}>Crédito</option><option {"selected" if pref_medio=="Otro" else ""}>Otro</option>
+            </select></div>
+            <div><label>Cuenta personal</label><select name='cuenta_id' style='width:100%;padding:10px'>{cuentas_opts}</select></div>
+          </div>
+          <div id='pfCreditoBox' style='display:none;background:#eef2ff;border:1px solid #c7d2fe;padding:12px;border-radius:12px;margin-top:10px'>
+            <b>💳 Compra con crédito</b>
+            <div style='display:grid;grid-template-columns:2fr 1fr;gap:10px;margin-top:8px'>
+              <select name='tarjeta_id' style='width:100%;padding:10px'>{tarjetas_opts}</select>
+              <input name='cuotas' type='number' min='1' value='1' placeholder='Cuotas' style='width:100%;padding:10px'>
+            </div>
+            <small style='color:#64748b'>La compra cuenta como consumo hoy, pero el dinero se proyecta según cierre/vencimiento de la tarjeta.</small>
+          </div>
+          <label style='display:block;margin-top:10px'>Observación</label>
+          <textarea name='observacion' rows='2' style='width:100%;padding:10px'></textarea>
+          <button style='margin-top:12px;background:#2563eb;color:white;border:0;padding:11px 15px;font-weight:bold'>Guardar</button>
+        </form>
+        <script>
+          function pfCredito(){{
+            document.getElementById('pfCreditoBox').style.display =
+              document.getElementById('pfMedio').value==='Crédito' ? 'block':'none';
+          }}
+          pfCredito();
+        </script>
+      """)}
+    """)
+
+
+@app.get("/personal/configuracion")
+def personal_configuracion():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    cur.execute("SELECT COUNT(*) total FROM pf_cuentas WHERE activa=TRUE"); nc=cur.fetchone()["total"]
+    cur.execute("SELECT COUNT(*) total FROM pf_tarjetas WHERE activa=TRUE"); nt=cur.fetchone()["total"]
+    cur.execute("SELECT COUNT(*) total FROM pf_obligaciones WHERE activa=TRUE"); no=cur.fetchone()["total"]
+    cur.execute("SELECT COUNT(*) total FROM pf_ingresos_recurrentes WHERE activo=TRUE"); ni=cur.fetchone()["total"]
+    con.close()
+    return html_layout("Configuración · Mis Finanzas",f"""
+      {_pf_nav()}
+      {card_html(f"""
+        <h2 style='margin-top:0'>⚙️ Configuración personal</h2>
+        <p style='color:#64748b'>Acá configurás una sola vez las bases que alimentan el dashboard y la proyección. Nada de esto se mezcla con DGI ni con la caja comercial.</p>
+        <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px'>
+          <a href='/personal/cuentas' style='text-decoration:none;color:inherit;background:#f8fafc;border:1px solid #dbe4ef;border-radius:14px;padding:14px'>
+            <div style='font-size:22px'>🏦</div><b>Cuentas y efectivo</b><div style='font-size:11px;color:#64748b;margin-top:5px'>{nc} activa/s</div>
+          </a>
+          <a href='/personal/tarjetas' style='text-decoration:none;color:inherit;background:#f8fafc;border:1px solid #dbe4ef;border-radius:14px;padding:14px'>
+            <div style='font-size:22px'>💳</div><b>Tarjetas</b><div style='font-size:11px;color:#64748b;margin-top:5px'>{nt} activa/s</div>
+          </a>
+          <a href='/personal/obligaciones' style='text-decoration:none;color:inherit;background:#f8fafc;border:1px solid #dbe4ef;border-radius:14px;padding:14px'>
+            <div style='font-size:22px'>📌</div><b>Deudas, fijos e ingresos</b><div style='font-size:11px;color:#64748b;margin-top:5px'>{no} obligación/es · {ni} ingreso/s previsto/s</div>
+          </a>
+          <a href='/personal/nrtech' style='text-decoration:none;color:inherit;background:#faf5ff;border:1px solid #ddd6fe;border-radius:14px;padding:14px'>
+            <div style='font-size:22px'>🏢</div><b>Personal ↔ NR Tech</b><div style='font-size:11px;color:#64748b;margin-top:5px'>Puente privado; no fiscal</div>
+          </a>
+        </div>
+      """)}
+    """)
+
+
+@app.route("/personal/transferencia",methods=["GET","POST"])
+def personal_transferencia():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_cuentas WHERE activa=TRUE ORDER BY moneda,nombre")
+    cuentas=cur.fetchall()
+    if request.method=="POST":
+        origen_id=request.form.get("cuenta_origen_id") or None
+        destino_id=request.form.get("cuenta_destino_id") or None
+        desc=request.form.get("descripcion","Transferencia entre cuentas").strip() or "Transferencia entre cuentas"
+        fecha_s=request.form.get("fecha","").strip()
+        try: fecha=datetime.date.fromisoformat(fecha_s) if fecha_s else datetime.date.today()
+        except Exception: fecha=datetime.date.today()
+        try: monto=Decimal((request.form.get("monto") or "0").replace(",",".")).quantize(Decimal("0.01"))
+        except Exception: monto=Decimal("0")
+        if not origen_id or not destino_id or origen_id==destino_id or monto<=0:
+            con.close();flash("Elegí dos cuentas distintas y un monto válido.","error");return redirect("/personal/transferencia")
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(origen_id,)); origen=cur.fetchone()
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(destino_id,)); destino=cur.fetchone()
+        if not origen or not destino or origen["moneda"]!=destino["moneda"]:
+            con.close();flash("La transferencia solo puede hacerse entre cuentas de la misma moneda.","error");return redirect("/personal/transferencia")
+        moneda=origen["moneda"]
+        cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo)
+                       VALUES(%s,'Transferencia',%s,'Transferencia interna',%s,%s,%s,'Transferencia','Neutro',-1,'Transferencia interna','transferencia') RETURNING id""",
+                    (fecha,desc,monto,moneda,origen_id))
+        salida_id=cur.fetchone()["id"]
+        cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo)
+                       VALUES(%s,'Transferencia',%s,'Transferencia interna',%s,%s,%s,'Transferencia','Neutro',1,'Transferencia interna','transferencia') RETURNING id""",
+                    (fecha,desc,monto,moneda,destino_id))
+        entrada_id=cur.fetchone()["id"]
+        cur.execute("""INSERT INTO pf_transferencias(fecha,cuenta_origen_id,cuenta_destino_id,monto,moneda,movimiento_salida_id,movimiento_entrada_id,descripcion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+                    (fecha,origen_id,destino_id,monto,moneda,salida_id,entrada_id,desc))
+        tid=cur.fetchone()["id"]
+        cur.execute("UPDATE pf_movimientos SET referencia_id=%s WHERE id IN (%s,%s)",(tid,salida_id,entrada_id))
+        con.commit();con.close();flash("Transferencia personal registrada.","success");return redirect("/personal")
+    con.close()
+    opts="<option value=''>Elegir cuenta</option>"+"".join(f"<option value='{c['id']}'>{escape(c['nombre'])} · {c['moneda']}</option>" for c in cuentas)
+    return html_layout("Transferencia entre cuentas",f"""
+      {_pf_nav()}
+      {card_html(f"""
+        <h2 style='margin-top:0'>↔ Transferencia entre cuentas</h2>
+        <p style='color:#64748b'>Mueve saldo entre tus propias cuentas. No cuenta como ingreso ni como gasto.</p>
+        <form method='post'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:9px'>
+            <div><label>Desde</label><select name='cuenta_origen_id' required style='width:100%;padding:10px'>{opts}</select></div>
+            <div><label>Hacia</label><select name='cuenta_destino_id' required style='width:100%;padding:10px'>{opts}</select></div>
+            <div><label>Monto</label><input name='monto' inputmode='decimal' required style='width:100%;padding:10px'></div>
+            <div><label>Fecha</label><input type='date' name='fecha' value='{datetime.date.today().isoformat()}' style='width:100%;padding:10px'></div>
+          </div>
+          <input name='descripcion' value='Transferencia entre cuentas' style='width:100%;padding:10px;margin-top:9px'>
+          <button style='margin-top:10px;background:#334155;color:white;border:0;padding:10px 14px'>Transferir</button>
+        </form>
+      """)}
+    """)
+
+
+@app.route("/personal/cuentas",methods=["GET","POST"])
+def personal_cuentas():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    if request.method=="POST":
+        nombre=request.form.get("nombre","").strip()
+        tipo=request.form.get("tipo","Cuenta").strip()
+        moneda=request.form.get("moneda","UYU").strip().upper()
+        obs=request.form.get("observacion","").strip()
+        try:saldo=Decimal((request.form.get("saldo_inicial") or "0").replace(",","."))
+        except Exception:saldo=Decimal("0")
+        if not nombre or moneda not in ("UYU","USD"):
+            con.close();flash("Nombre y moneda son obligatorios.","error");return redirect("/personal/cuentas")
+        cur.execute("""INSERT INTO pf_cuentas(nombre,tipo,moneda,saldo_inicial,observacion)
+                       VALUES(%s,%s,%s,%s,%s)""",(nombre,tipo,moneda,saldo,obs))
+        con.commit();flash("Cuenta personal agregada.","success")
+    cur.execute("""
+      SELECT c.*,
+             COALESCE(SUM(CASE WHEN m.moneda=c.moneda THEN m.signo_saldo*m.monto ELSE 0 END),0) movs
+      FROM pf_cuentas c LEFT JOIN pf_movimientos m ON m.cuenta_id=c.id
+      WHERE c.activa=TRUE GROUP BY c.id ORDER BY c.moneda,c.nombre
+    """)
+    cuentas=cur.fetchall();con.close()
+    filas="".join(f"""<tr><td><b>{escape(c['nombre'])}</b><br><small>{escape(c['tipo'])}</small></td>
+      <td>{c['moneda']}</td><td>{_pf_money(c['saldo_inicial'],c['moneda'])}</td>
+      <td><b>{_pf_money(float(c['saldo_inicial'] or 0)+float(c['movs'] or 0),c['moneda'])}</b></td>
+      <td>{escape(str(c.get('observacion') or ''))}</td></tr>""" for c in cuentas) or "<tr><td colspan='5'>Todavía no cargamos cuentas.</td></tr>"
+    return html_layout("Cuentas personales",f"""{_pf_nav()}{card_html(f"""
+      <h2 style='margin-top:0'>🏦 Cuentas y efectivo</h2>
+      <form method='post' style='display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:8px;align-items:end'>
+        <div><label>Nombre</label><input name='nombre' required placeholder='Ej: BROU' style='width:100%;padding:9px'></div>
+        <div><label>Tipo</label><select name='tipo' style='width:100%;padding:9px'><option>Cuenta</option><option>Efectivo</option><option>Billetera</option></select></div>
+        <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+        <div><label>Saldo inicial</label><input name='saldo_inicial' inputmode='decimal' value='0' style='width:100%;padding:9px'></div>
+        <div style='grid-column:1/-1'><input name='observacion' placeholder='Observación opcional' style='width:100%;padding:9px'></div>
+        <button style='background:#2563eb;color:white;border:0;padding:10px'>Agregar cuenta</button>
+      </form>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Cuenta</th><th>Moneda</th><th>Inicial</th><th>Disponible</th><th>Nota</th></tr>{filas}</table></div>
+      <p style='font-size:11px;color:#64748b'>No se convierte USD a pesos automáticamente: cada moneda se controla por separado.</p>
+    """)}""")
+
+
+@app.route("/personal/tarjetas",methods=["GET","POST"])
+def personal_tarjetas():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    if request.method=="POST":
+        nombre=request.form.get("nombre","").strip()
+        banco=request.form.get("banco","").strip()
+        moneda=request.form.get("moneda","UYU").strip().upper()
+        obs=request.form.get("observacion","").strip()
+        try:cierre=int(request.form.get("dia_cierre") or 0);vence=int(request.form.get("dia_vencimiento") or 0)
+        except Exception:cierre=vence=0
+        try:limite=Decimal((request.form.get("limite_credito") or "").replace(",",".")) if request.form.get("limite_credito") else None
+        except Exception:limite=None
+        if not nombre or moneda not in ("UYU","USD") or not 1<=cierre<=31 or not 1<=vence<=31:
+            con.close();flash("Completá nombre, moneda, día de cierre y vencimiento.","error");return redirect("/personal/tarjetas")
+        cur.execute("""INSERT INTO pf_tarjetas(nombre,banco,moneda,dia_cierre,dia_vencimiento,limite_credito,observacion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s)""",(nombre,banco,moneda,cierre,vence,limite,obs))
+        con.commit();flash("Tarjeta agregada.","success")
+
+    hoy=datetime.date.today()
+    ini_actual,fin_actual=_pf_month_bounds(hoy.year,hoy.month)
+    sig=_pf_add_months(datetime.date(hoy.year,hoy.month,1),1)
+    ini_sig,fin_sig=_pf_month_bounds(sig.year,sig.month)
+    cur.execute("SELECT * FROM pf_tarjetas WHERE activa=TRUE ORDER BY nombre")
+    tarjetas=cur.fetchall()
+    for t in tarjetas:
+        cur.execute("""SELECT
+          COALESCE(SUM(CASE WHEN c.estado='Pendiente' AND c.fecha_vencimiento BETWEEN %s AND %s THEN c.monto ELSE 0 END),0) actual,
+          COALESCE(SUM(CASE WHEN c.estado='Pendiente' AND c.fecha_vencimiento BETWEEN %s AND %s THEN c.monto ELSE 0 END),0) siguiente,
+          COALESCE(SUM(CASE WHEN c.estado='Pendiente' THEN c.monto ELSE 0 END),0) futuro
+          FROM pf_cuotas c JOIN pf_compras_cuotas pc ON pc.id=c.compra_id
+          WHERE pc.tarjeta_id=%s AND pc.activa=TRUE""",
+                    (ini_actual,fin_actual,ini_sig,fin_sig,t["id"]))
+        r=cur.fetchone()
+        t["actual"]=r["actual"];t["siguiente"]=r["siguiente"];t["futuro"]=r["futuro"]
+    con.close()
+    filas="".join(f"""<tr><td><b>{escape(t['nombre'])}</b><br><small>{escape(str(t.get('banco') or ''))}</small></td>
+      <td>{t['moneda']}</td><td>{t['dia_cierre']}</td><td>{t['dia_vencimiento']}</td>
+      <td>{_pf_money(t['limite_credito'],t['moneda']) if t.get('limite_credito') is not None else '-'}</td>
+      <td><b>{_pf_money(t['actual'],t['moneda'])}</b></td><td><b>{_pf_money(t['siguiente'],t['moneda'])}</b></td>
+      <td>{_pf_money(t['futuro'],t['moneda'])}</td></tr>""" for t in tarjetas) or "<tr><td colspan='8'>Todavía no cargamos tarjetas.</td></tr>"
+    return html_layout("Tarjetas personales",f"""{_pf_nav()}{card_html(f"""
+      <h2 style='margin-top:0'>💳 Tarjetas</h2>
+      <p style='color:#64748b'>El cierre y vencimiento determinan automáticamente cuándo aparece cada cuota. No cargamos fechas inventadas.</p>
+      <form method='post' style='display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;align-items:end'>
+        <div><label>Nombre</label><input name='nombre' required placeholder='Ej: Santander Visa' style='width:100%;padding:9px'></div>
+        <div><label>Banco</label><input name='banco' style='width:100%;padding:9px'></div>
+        <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+        <div><label>Día cierre</label><input type='number' min='1' max='31' name='dia_cierre' required style='width:100%;padding:9px'></div>
+        <div><label>Día vencimiento</label><input type='number' min='1' max='31' name='dia_vencimiento' required style='width:100%;padding:9px'></div>
+        <div><label>Límite (opcional)</label><input name='limite_credito' inputmode='decimal' style='width:100%;padding:9px'></div>
+        <button style='background:#4f46e5;color:white;border:0;padding:10px'>Agregar</button>
+      </form>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Tarjeta</th><th>Moneda</th><th>Cierre</th><th>Vence</th><th>Límite</th><th>Este mes</th><th>Próximo mes</th><th>Futuro pendiente</th></tr>{filas}</table></div>
+    """)}""")
+
+
+@app.route("/personal/obligaciones",methods=["GET","POST"])
+def personal_obligaciones():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    if request.method=="POST":
+        accion=request.form.get("accion","obligacion").strip()
+
+        if accion=="ingreso":
+            concepto=request.form.get("concepto_ingreso","").strip()
+            moneda=request.form.get("moneda_ingreso","UYU").strip().upper()
+            obs=request.form.get("observacion_ingreso","").strip()
+            fi=request.form.get("fecha_inicio_ingreso") or None
+            ff=request.form.get("fecha_fin_ingreso") or None
+            try:monto=Decimal((request.form.get("monto_ingreso") or "0").replace(",","."))
+            except Exception:monto=Decimal("0")
+            try:dia=int(request.form.get("dia_cobro") or 0) or None
+            except Exception:dia=None
+            if not concepto or monto<=0 or moneda not in ("UYU","USD"):
+                con.close();flash("Revisá concepto, monto y moneda del ingreso.","error");return redirect("/personal/obligaciones#ingresos")
+            cur.execute("""INSERT INTO pf_ingresos_recurrentes(concepto,monto,moneda,dia_cobro,fecha_inicio,fecha_fin,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s)""",(concepto,monto,moneda,dia,fi,ff,obs))
+            con.commit();flash("Ingreso recurrente agregado a la proyección.","success")
+            return redirect("/personal/obligaciones#ingresos")
+
+        concepto=request.form.get("concepto","").strip()
+        tipo=request.form.get("tipo","Fijo").strip()
+        categoria=request.form.get("categoria","").strip()
+        moneda=request.form.get("moneda","UYU").strip().upper()
+        obs=request.form.get("observacion","").strip()
+        try:monto=Decimal((request.form.get("monto") or "0").replace(",","."))
+        except Exception:monto=Decimal("0")
+        try:saldo=Decimal((request.form.get("saldo_deuda") or "").replace(",",".")) if request.form.get("saldo_deuda") else None
+        except Exception:saldo=None
+        try:dia=int(request.form.get("dia_vencimiento") or 0) or None
+        except Exception:dia=None
+        try:ct=int(request.form.get("cuotas_total") or 0) or None
+        except Exception:ct=None
+        try:ca=int(request.form.get("cuota_actual") or 0) or None
+        except Exception:ca=None
+        fi=request.form.get("fecha_inicio") or None; ff=request.form.get("fecha_fin") or None
+        incluir=request.form.get("incluir_proyeccion")=="1"
+        if not concepto or tipo not in ("Fijo","Cuota","Deuda sin fecha") or moneda not in ("UYU","USD") or monto<0:
+            con.close();flash("Revisá los datos de la obligación.","error");return redirect("/personal/obligaciones")
+        if tipo=="Deuda sin fecha":incluir=False
+        cur.execute("""INSERT INTO pf_obligaciones(concepto,tipo,categoria,monto,moneda,dia_vencimiento,
+                       fecha_inicio,fecha_fin,cuotas_total,cuota_actual,saldo_deuda,incluir_proyeccion,observacion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (concepto,tipo,categoria,monto,moneda,dia,fi,ff,ct,ca,saldo,incluir,obs))
+        con.commit();flash("Obligación agregada.","success")
+    cur.execute("SELECT * FROM pf_obligaciones WHERE activa=TRUE ORDER BY tipo,concepto")
+    obligaciones=cur.fetchall()
+    cur.execute("SELECT * FROM pf_ingresos_recurrentes WHERE activo=TRUE ORDER BY concepto")
+    ingresos_rec=cur.fetchall()
+    con.close()
+    filas=""
+    for o in obligaciones:
+        venc="Sin fecha" if o["tipo"]=="Deuda sin fecha" else (f"Día {o['dia_vencimiento']}" if o.get("dia_vencimiento") else "Día a definir")
+        saldo=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "-"
+        cuota=f"{o.get('cuota_actual') or '-'}/{o.get('cuotas_total') or '-'}" if o["tipo"]=="Cuota" else "-"
+        filas+=f"""<tr><td><b>{escape(o['concepto'])}</b><br><small>{escape(o['tipo'])}</small></td>
+          <td>{_pf_money(o['monto'],o['moneda'])}</td><td>{escape(venc)}</td><td>{cuota}</td>
+          <td>{saldo}</td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
+    if not filas:filas="<tr><td colspan='6'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
+    ingresos_filas="".join(
+        f"""<tr><td><b>{escape(i['concepto'])}</b></td><td>{_pf_money(i['monto'],i['moneda'])}</td>
+        <td>{'Día '+str(i['dia_cobro']) if i.get('dia_cobro') else 'A definir'}</td>
+        <td>{i['fecha_inicio'].strftime('%d/%m/%Y') if i.get('fecha_inicio') else '-'}</td>
+        <td>{i['fecha_fin'].strftime('%d/%m/%Y') if i.get('fecha_fin') else 'Sin fin'}</td></tr>"""
+        for i in ingresos_rec
+    ) or "<tr><td colspan='5'>Todavía no cargamos ingresos recurrentes.</td></tr>"
+
+    return html_layout("Deudas y gastos fijos",f"""{_pf_nav()}{card_html(f"""
+      <h2 style='margin-top:0'>📌 Deudas, cuotas y gastos fijos</h2>
+      <p style='color:#64748b'>Una deuda sin fecha queda en tu deuda total, pero no infla lo que tenés que pagar el mes próximo.</p>
+      <form method='post'>
+        <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px'>
+          <div><label>Concepto</label><input name='concepto' required style='width:100%;padding:9px'></div>
+          <div><label>Tipo</label><select name='tipo' style='width:100%;padding:9px'><option>Fijo</option><option>Cuota</option><option>Deuda sin fecha</option></select></div>
+          <div><label>Monto mensual/cuota</label><input name='monto' inputmode='decimal' value='0' style='width:100%;padding:9px'></div>
+          <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+          <div><label>Día vencimiento</label><input name='dia_vencimiento' type='number' min='1' max='31' style='width:100%;padding:9px'></div>
+          <div><label>Saldo total deuda</label><input name='saldo_deuda' inputmode='decimal' placeholder='Solo si lo conocemos' style='width:100%;padding:9px'></div>
+          <div><label>Cuotas total</label><input name='cuotas_total' type='number' min='1' style='width:100%;padding:9px'></div>
+          <div><label>Cuota actual</label><input name='cuota_actual' type='number' min='1' style='width:100%;padding:9px'></div>
+          <div><label>Desde</label><input name='fecha_inicio' type='date' style='width:100%;padding:9px'></div>
+          <div><label>Hasta</label><input name='fecha_fin' type='date' style='width:100%;padding:9px'></div>
+        </div>
+        <label style='display:block;margin-top:9px'><input type='checkbox' name='incluir_proyeccion' value='1' checked> Incluir en proyección mensual</label>
+        <textarea name='observacion' rows='2' placeholder='Nota opcional' style='width:100%;padding:9px;margin-top:8px'></textarea>
+        <button style='margin-top:9px;background:#2563eb;color:white;border:0;padding:10px 14px'>Agregar</button>
+      </form>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Concepto</th><th>Monto</th><th>Vence</th><th>Cuota</th><th>Saldo deuda</th><th>Proyecta</th></tr>{filas}</table></div>
+    """)}
+    <div id='ingresos' style='margin-top:12px'>
+      {card_html(f"""
+        <h2 style='margin-top:0'>💰 Ingresos recurrentes previstos</h2>
+        <p style='color:#64748b'>Solo cargamos ingresos mensuales que realmente conozcamos. Sirven para calcular si el próximo mes queda cubierto o falta dinero.</p>
+        <form method='post'>
+          <input type='hidden' name='accion' value='ingreso'>
+          <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end'>
+            <div><label>Concepto</label><input name='concepto_ingreso' required placeholder='Ej: Sueldo' style='width:100%;padding:9px'></div>
+            <div><label>Monto mensual</label><input name='monto_ingreso' inputmode='decimal' required style='width:100%;padding:9px'></div>
+            <div><label>Moneda</label><select name='moneda_ingreso' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+            <div><label>Día estimado de cobro</label><input name='dia_cobro' type='number' min='1' max='31' style='width:100%;padding:9px'></div>
+            <div><label>Desde</label><input name='fecha_inicio_ingreso' type='date' style='width:100%;padding:9px'></div>
+            <div><label>Hasta</label><input name='fecha_fin_ingreso' type='date' style='width:100%;padding:9px'></div>
+          </div>
+          <input name='observacion_ingreso' placeholder='Nota opcional' style='width:100%;padding:9px;margin-top:8px'>
+          <button style='margin-top:9px;background:#16a34a;color:white;border:0;padding:10px 14px'>Agregar ingreso previsto</button>
+        </form>
+        <div style='overflow-x:auto;margin-top:15px'><table><tr><th>Ingreso</th><th>Monto</th><th>Cobro</th><th>Desde</th><th>Hasta</th></tr>{ingresos_filas}</table></div>
+      """)}
+    </div>""")
+
+
+@app.get("/personal/proximos")
+def personal_proximos():
+    g=_pf_guard()
+    if g:return g
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.args.get("anio") or hoy.year)
+        mes=int(request.args.get("mes") or hoy.month)
+        base=datetime.date(anio,mes,1)
+    except Exception:
+        base=datetime.date(hoy.year,hoy.month,1)
+
+    con=db();cur=con.cursor()
+    meses=[]
+    for i in range(12):
+        f=_pf_add_months(base,i)
+        p=_pf_projection_month(cur,f.year,f.month)
+        meses.append((f,p))
+
+    inicio,fin=_pf_month_bounds(base.year,base.month)
+    cur.execute("SELECT * FROM pf_cuentas WHERE activa=TRUE ORDER BY moneda,nombre")
+    cuentas=cur.fetchall()
+    cur.execute("""
+      SELECT o.*,p.id pago_id,p.fecha_pago,p.monto monto_pagado
+      FROM pf_obligaciones o
+      LEFT JOIN pf_pagos_obligaciones p ON p.obligacion_id=o.id AND p.periodo=%s
+      WHERE o.tipo<>'Deuda sin fecha'
+        AND (o.fecha_inicio IS NULL OR o.fecha_inicio<=%s)
+        AND (o.fecha_fin IS NULL OR o.fecha_fin>=%s)
+        AND (o.activa=TRUE OR p.id IS NOT NULL)
+      ORDER BY o.dia_vencimiento NULLS LAST,o.concepto
+    """,(inicio,fin,inicio))
+    obs=cur.fetchall()
+    cur.execute("""
+      SELECT c.*,pc.descripcion,pc.moneda,pc.cuotas_total,t.nombre tarjeta
+      FROM pf_cuotas c
+      JOIN pf_compras_cuotas pc ON pc.id=c.compra_id
+      JOIN pf_tarjetas t ON t.id=pc.tarjeta_id
+      WHERE c.fecha_vencimiento BETWEEN %s AND %s
+      ORDER BY c.fecha_vencimiento
+    """,(inicio,fin))
+    cuotas=cur.fetchall()
+    cur.execute("SELECT * FROM pf_obligaciones WHERE activa=TRUE AND tipo='Deuda sin fecha' ORDER BY concepto")
+    sin_fecha=cur.fetchall()
+    con.close()
+
+    cards=""
+    for f,p in meses:
+        r=p["UYU"]
+        color="#166534" if r["resultado"]>=0 else "#b91c1c"
+        cards+=f"""<a href='/personal/proximos?anio={f.year}&mes={f.month}' style='text-decoration:none;color:inherit'>
+          <div style='background:white;border:1px solid {"#818cf8" if (f.year==base.year and f.month==base.month) else "#dbe4ef"};border-radius:14px;padding:12px'>
+            <small style='color:#64748b'>{f.strftime("%m/%Y")}</small>
+            <div style='font-size:18px;font-weight:900'>{_pf_money(r["comprometido"])}</div>
+            <div style='font-size:10px;color:#64748b'>Ingreso previsto {_pf_money(r["ingresos"])}</div>
+            <div style='font-size:11px;font-weight:bold;color:{color}'>{("+" if r["resultado"]>=0 else "−")}{_pf_money(abs(r["resultado"]))}</div>
+          </div></a>"""
+
+    detalle=""
+    for o in obs:
+        due=_pf_safe_date(base.year,base.month,o.get("dia_vencimiento") or 1)
+        if o.get("pago_id"):
+            estado=f"<span style='color:#166534;font-weight:800'>✅ Pagado {o['fecha_pago'].strftime('%d/%m') if o.get('fecha_pago') else ''}</span>"
+            accion=""
+        else:
+            estado="<span style='color:#b45309;font-weight:800'>⏳ Pendiente</span>"
+            opts=_pf_account_options(cuentas,o["moneda"])
+            accion=f"""<form method='post' action='/personal/obligacion/{o['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+              <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+              <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+              <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
+            </form>"""
+        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'])}</strong></div>"""
+
+    for q in cuotas:
+        pagada=q.get("estado")=="Pagada"
+        if pagada:
+            estado=f"<span style='color:#166534;font-weight:800'>✅ Pagada {q['fecha_pago'].strftime('%d/%m') if q.get('fecha_pago') else ''}</span>"
+            accion=""
+        else:
+            estado="<span style='color:#b45309;font-weight:800'>⏳ Pendiente</span>"
+            opts=_pf_account_options(cuentas,q["moneda"])
+            accion=f"""<form method='post' action='/personal/cuota/{q['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+              <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+              <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+              <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
+            </form>"""
+        detalle+=f"""<div class='pf-next'><span><b>{q['fecha_vencimiento'].strftime('%d/%m')}</b> · {escape(q['descripcion'])}<small>{escape(q['tarjeta'])} · cuota {q['numero_cuota']}/{q['cuotas_total']} · {estado}{accion}</small></span><strong>{_pf_money(q['monto'],q['moneda'])}</strong></div>"""
+
+    if not detalle:detalle="<div style='padding:18px;color:#94a3b8;text-align:center'>Sin pagos cargados para este mes.</div>"
+    deudas_sf=""
+    for o in sin_fecha:
+        saldo_txt=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "Saldo a confirmar"
+        opts=_pf_account_options(cuentas,o["moneda"])
+        form=f"""<form method='post' action='/personal/deuda/{o['id']}/abonar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:6px'>
+          <input name='monto' inputmode='decimal' required placeholder='Monto del abono' style='width:105px;padding:5px;font-size:10px'>
+          <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+          <button style='border:0;background:#334155;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>Registrar abono</button>
+        </form>"""
+        deudas_sf+=f"<div class='pf-next'><span>{escape(o['concepto'])}<small>Sin fecha de pago definida{form}</small></span><strong>{saldo_txt}</strong></div>"
+    if not deudas_sf:deudas_sf="<div style='color:#94a3b8;font-size:12px'>No hay deudas sin fecha cargadas.</div>"
+
+    return html_layout("Próximos pagos",f"""
+      {_pf_nav()}
+      <style>
+        .pf-next{{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #edf2f7;font-size:12px}}
+        .pf-next small{{display:block;color:#94a3b8;margin-top:2px}}
+        @media(max-width:700px){{.pf-pay-grid{{grid-template-columns:1fr!important}}}}
+      </style>
+      {card_html(f"""
+        <h2 style='margin-top:0'>📅 Proyección de 12 meses</h2>
+        <p style='color:#64748b'>PENDIENTE: solo lo que todavía falta pagar. PROYECTADO: compromisos futuros conocidos. Un pago marcado deja de contarse en ese mes.</p>
+        <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px'>{cards}</div>
+      """)}
+      <div class='pf-pay-grid' style='display:grid;grid-template-columns:1.2fr .8fr;gap:12px;margin-top:12px'>
+        {card_html(f"<h3 style='margin-top:0'>Pagos de {base.strftime('%m/%Y')}</h3>{detalle}")}
+        {card_html(f"<h3 style='margin-top:0'>Deudas sin fecha</h3>{deudas_sf}")}
+      </div>
+    """)
+
+
+@app.route("/personal/nrtech",methods=["GET","POST"])
+def personal_nrtech():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_cuentas WHERE activa=TRUE ORDER BY moneda,nombre")
+    cuentas=cur.fetchall()
+    if request.method=="POST":
+        tipo=request.form.get("tipo","Retiro extraordinario").strip()
+        moneda=request.form.get("moneda","UYU").strip().upper()
+        cuenta_id=request.form.get("cuenta_id") or None
+        desc=request.form.get("descripcion","").strip()
+        fecha_s=request.form.get("fecha","")
+        try:fecha=datetime.date.fromisoformat(fecha_s) if fecha_s else datetime.date.today()
+        except Exception:fecha=datetime.date.today()
+        try:monto=Decimal((request.form.get("monto") or "0").replace(",","."))
+        except Exception:monto=Decimal("0")
+        if tipo not in ("Retiro extraordinario","Devolución","Sueldo") or monto<=0 or moneda not in ("UYU","USD"):
+            con.close();flash("Revisá tipo, monto y moneda.","error");return redirect("/personal/nrtech")
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+        cuenta=cur.fetchone() if cuenta_id else None
+        if not cuenta or cuenta["moneda"]!=moneda:
+            con.close();flash("Elegí una cuenta personal activa de la misma moneda.","error");return redirect("/personal/nrtech")
+
+        if tipo=="Retiro extraordinario":
+            impacto="Ingreso";signo=1;movtipo="Ingreso"
+        elif tipo=="Sueldo":
+            impacto="Ingreso";signo=1;movtipo="Ingreso"
+        else:
+            impacto="Neutro";signo=-1;movtipo="Transferencia"
+
+        cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                       medio_pago,impacto_presupuesto,signo_saldo,origen)
+                       VALUES(%s,%s,%s,'NR Tech',%s,%s,%s,'Transferencia',%s,%s,'NRTech') RETURNING id""",
+                    (fecha,movtipo,desc or tipo,monto,moneda,cuenta_id,impacto,signo))
+        mid=cur.fetchone()["id"]
+        cur.execute("""INSERT INTO pf_nrtech_movimientos(fecha,tipo,monto,moneda,cuenta_personal_id,movimiento_personal_id,descripcion)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s)""",(fecha,tipo,monto,moneda,cuenta_id,mid,desc))
+        con.commit();flash("Movimiento Personal ↔ NR Tech registrado.","success")
+
+    cur.execute("SELECT * FROM pf_nrtech_movimientos ORDER BY fecha DESC,id DESC LIMIT 100")
+    movs=cur.fetchall()
+    cur.execute("""
+      SELECT moneda,
+        COALESCE(SUM(CASE WHEN tipo='Retiro extraordinario' THEN monto ELSE 0 END),0) retiros,
+        COALESCE(SUM(CASE WHEN tipo='Devolución' THEN monto ELSE 0 END),0) devoluciones,
+        COALESCE(SUM(CASE WHEN tipo='Sueldo' THEN monto ELSE 0 END),0) sueldos
+      FROM pf_nrtech_movimientos GROUP BY moneda
+    """)
+    sums={r["moneda"]:r for r in cur.fetchall()}
+    con.close()
+    opts="<option value=''>Sin cuenta</option>"+"".join(f"<option value='{c['id']}'>{escape(c['nombre'])} · {c['moneda']}</option>" for c in cuentas)
+    filas="".join(f"""<tr><td>{m['fecha'].strftime('%d/%m/%Y')}</td><td><b>{escape(m['tipo'])}</b></td>
+      <td>{_pf_money(m['monto'],m['moneda'])}</td><td>{escape(str(m.get('descripcion') or ''))}</td></tr>""" for m in movs) or "<tr><td colspan='4'>Sin movimientos todavía.</td></tr>"
+    u=sums.get("UYU") or {}
+    saldo=float(u.get("retiros") or 0)-float(u.get("devoluciones") or 0)
+    return html_layout("NR Tech ↔ Personal",f"""{_pf_nav()}{card_html(f"""
+      <h2 style='margin-top:0'>🏢 Cuenta corriente Personal ↔ NR Tech</h2>
+      <div style='background:#fff7ed;border:1px solid #fed7aa;padding:12px;border-radius:12px;margin-bottom:13px'>
+        <b>Separación fiscal:</b> estos registros son privados. <b>No crean gastos del taller, no modifican facturación y no se usan para DGI.</b>
+      </div>
+      <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:14px'>
+        <div style='background:#f8fafc;padding:12px;border-radius:12px'><small>Retiros extraordinarios</small><div style='font-size:19px;font-weight:900'>{_pf_money(u.get("retiros",0))}</div></div>
+        <div style='background:#f0fdf4;padding:12px;border-radius:12px'><small>Devuelto</small><div style='font-size:19px;font-weight:900'>{_pf_money(u.get("devoluciones",0))}</div></div>
+        <div style='background:#eef2ff;padding:12px;border-radius:12px'><small>Saldo a compensar</small><div style='font-size:19px;font-weight:900;color:#7c3aed'>{_pf_money(saldo)}</div></div>
+      </div>
+      <form method='post' style='display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;align-items:end'>
+        <div><label>Tipo</label><select name='tipo' style='width:100%;padding:9px'><option>Retiro extraordinario</option><option>Devolución</option><option>Sueldo</option></select></div>
+        <div><label>Fecha</label><input type='date' name='fecha' value='{datetime.date.today().isoformat()}' style='width:100%;padding:9px'></div>
+        <div><label>Monto</label><input name='monto' inputmode='decimal' required style='width:100%;padding:9px'></div>
+        <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+        <div><label>Cuenta destino/origen</label><select name='cuenta_id' required style='width:100%;padding:9px'>{opts}</select></div>
+        <div><label>Detalle</label><input name='descripcion' style='width:100%;padding:9px'></div>
+        <button style='background:#7c3aed;color:white;border:0;padding:10px'>Registrar</button>
+      </form>
+      <div style='overflow-x:auto;margin-top:15px'><table><tr><th>Fecha</th><th>Tipo</th><th>Monto</th><th>Detalle</th></tr>{filas}</table></div>
+    """)}""")
+
+
+@app.post("/personal/cuota/<int:cuota_id>/pagar")
+def personal_cuota_pagar(cuota_id):
+    g=_pf_guard()
+    if g:return g
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.form.get("anio") or hoy.year);mes=int(request.form.get("mes") or hoy.month)
+    except Exception:
+        anio=hoy.year;mes=hoy.month
+    cuenta_id=request.form.get("cuenta_id") or None
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT c.*,pc.descripcion,pc.moneda FROM pf_cuotas c
+                   JOIN pf_compras_cuotas pc ON pc.id=c.compra_id WHERE c.id=%s""",(cuota_id,))
+    q=cur.fetchone()
+    if not q or q["estado"]=="Pagada":
+        con.close();return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+    cuenta=cur.fetchone() if cuenta_id else None
+    if not cuenta or cuenta["moneda"]!=q["moneda"]:
+        con.close();flash("Elegí una cuenta activa de la misma moneda para registrar el pago real.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                   medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id)
+                   VALUES(CURRENT_DATE,'Pago',%s,'Tarjeta',%s,%s,%s,'Pago tarjeta','Neutro',-1,
+                          'Pago cuota','cuota',%s)""",
+                (f"Pago cuota · {q['descripcion']}",q["monto"],q["moneda"],cuenta_id,cuota_id))
+    cur.execute("UPDATE pf_cuotas SET estado='Pagada',fecha_pago=CURRENT_DATE WHERE id=%s",(cuota_id,))
+    con.commit();con.close();flash("Cuota marcada como pagada y descontada de la cuenta.","success")
+    return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+
+@app.post("/personal/obligacion/<int:oid>/pagar")
+def personal_obligacion_pagar(oid):
+    g=_pf_guard()
+    if g:return g
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.form.get("anio") or hoy.year);mes=int(request.form.get("mes") or hoy.month)
+    except Exception:
+        anio=hoy.year;mes=hoy.month
+    periodo=datetime.date(anio,mes,1)
+    cuenta_id=request.form.get("cuenta_id") or None
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_obligaciones WHERE id=%s AND activa=TRUE",(oid,))
+    o=cur.fetchone()
+    if not o:
+        con.close();return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+    cuenta=cur.fetchone() if cuenta_id else None
+    if not cuenta or cuenta["moneda"]!=o["moneda"]:
+        con.close();flash("Elegí una cuenta activa de la misma moneda para registrar el pago real.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    cur.execute("SELECT id FROM pf_pagos_obligaciones WHERE obligacion_id=%s AND periodo=%s",(oid,periodo))
+    if cur.fetchone():
+        con.close();flash("Ese período ya figura pagado.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                   medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id)
+                   VALUES(CURRENT_DATE,'Pago',%s,%s,%s,%s,%s,'Pago obligación','Gasto',-1,
+                          'Pago obligación','obligacion',%s) RETURNING id""",
+                (f"Pago · {o['concepto']}",o.get("categoria") or o["tipo"],o["monto"],o["moneda"],cuenta_id,oid))
+    mid=cur.fetchone()["id"]
+    cur.execute("""INSERT INTO pf_pagos_obligaciones(obligacion_id,periodo,monto,moneda,cuenta_id,movimiento_id)
+                   VALUES(%s,%s,%s,%s,%s,%s)""",(oid,periodo,o["monto"],o["moneda"],cuenta_id,mid))
+
+    # Si es un préstamo/cuota, avanzamos la cuota y reducimos el saldo solo cuando esos datos fueron confirmados.
+    if o["tipo"]=="Cuota":
+        saldo_nuevo=None
+        if o.get("saldo_deuda") is not None:
+            saldo_nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-Decimal(str(o["monto"])))
+        cuota_actual=o.get("cuota_actual")
+        cuotas_total=o.get("cuotas_total")
+        finalizada=False
+        nueva_cuota=cuota_actual
+        if cuota_actual is not None and cuotas_total is not None:
+            if int(cuota_actual)>=int(cuotas_total):
+                finalizada=True
+            else:
+                nueva_cuota=int(cuota_actual)+1
+        if saldo_nuevo is not None and saldo_nuevo<=0:
+            finalizada=True
+        cur.execute("""UPDATE pf_obligaciones
+                       SET saldo_deuda=COALESCE(%s,saldo_deuda), cuota_actual=%s,
+                           fecha_fin=CASE WHEN %s THEN %s ELSE fecha_fin END,
+                           activa=CASE WHEN %s THEN FALSE ELSE activa END
+                       WHERE id=%s""",
+                    (saldo_nuevo,nueva_cuota,finalizada,periodo,finalizada,oid))
+
+    con.commit();con.close();flash("Pago registrado y descontado de la cuenta.","success")
+    return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+
+@app.post("/personal/deuda/<int:oid>/abonar")
+def personal_deuda_abonar(oid):
+    g=_pf_guard()
+    if g:return g
+    cuenta_id=request.form.get("cuenta_id") or None
+    try:monto=Decimal((request.form.get("monto") or "0").replace(",",".")).quantize(Decimal("0.01"))
+    except Exception:monto=Decimal("0")
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_obligaciones WHERE id=%s AND activa=TRUE AND tipo='Deuda sin fecha'",(oid,))
+    o=cur.fetchone()
+    if not o or monto<=0:
+        con.close();flash("Revisá la deuda y el monto del abono.","error");return redirect("/personal/proximos")
+    cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+    cuenta=cur.fetchone() if cuenta_id else None
+    if not cuenta or cuenta["moneda"]!=o["moneda"]:
+        con.close();flash("Elegí una cuenta activa de la misma moneda.","error");return redirect("/personal/proximos")
+    if o.get("saldo_deuda") is not None and monto>Decimal(str(o["saldo_deuda"])):
+        con.close();flash("El abono no puede superar el saldo confirmado de la deuda.","error");return redirect("/personal/proximos")
+    cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
+                   medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id)
+                   VALUES(CURRENT_DATE,'Pago',%s,'Deudas',%s,%s,%s,'Abono deuda','Gasto',-1,
+                          'Abono deuda','deuda_sin_fecha',%s)""",
+                (f"Abono · {o['concepto']}",monto,o["moneda"],cuenta_id,oid))
+    if o.get("saldo_deuda") is not None:
+        nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-monto)
+        cur.execute("UPDATE pf_obligaciones SET saldo_deuda=%s,activa=CASE WHEN %s<=0 THEN FALSE ELSE activa END WHERE id=%s",(nuevo,nuevo,oid))
+    con.commit();con.close();flash("Abono registrado. La deuda sin fecha no se proyecta como vencimiento mensual.","success")
+    return redirect("/personal/proximos")
+
 
 
 if __name__ == "__main__":
