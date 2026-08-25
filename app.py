@@ -159,8 +159,10 @@ CREATE TABLE IF NOT EXISTS clientes (
     cur.execute("""CREATE TABLE IF NOT EXISTS venta_items (
       id SERIAL PRIMARY KEY, venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
       descripcion TEXT NOT NULL, cantidad INTEGER DEFAULT 1,
-      precio_unitario NUMERIC DEFAULT 0, costo_unitario NUMERIC DEFAULT 0
+      precio_unitario NUMERIC DEFAULT 0, costo_unitario NUMERIC DEFAULT 0,
+      stock_producto_id INTEGER REFERENCES stock_productos(id)
     );""")
+    cur.execute("ALTER TABLE venta_items ADD COLUMN IF NOT EXISTS stock_producto_id INTEGER REFERENCES stock_productos(id);")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS ordenes (
@@ -598,45 +600,131 @@ def venta_directa():
         email=request.form.get("email","").strip(); forma=request.form.get("forma_pago","").strip()
         try: garantia_dias=max(0,int(request.form.get("garantia_dias","30") or 30))
         except: garantia_dias=30
+
+        sids=request.form.getlist("stock_producto_id")
         ds=request.form.getlist("descripcion"); qs=request.form.getlist("cantidad")
         ps=request.form.getlist("precio"); cs=request.form.getlist("costo")
-        items=[]; total=0.0; costos=0.0
-        for d,q,p,c in zip(ds,qs,ps,cs):
-            if not d.strip(): continue
-            try: q=max(1,int(q or 1))
+        lineas=[]
+        for idx,d in enumerate(ds):
+            sid=(sids[idx] if idx<len(sids) else "").strip()
+            qraw=qs[idx] if idx<len(qs) else "1"
+            praw=ps[idx] if idx<len(ps) else "0"
+            craw=cs[idx] if idx<len(cs) else "0"
+            try: q=max(1,int(qraw or 1))
             except: q=1
-            try: pv=float((p or "0").replace(",","."))
-            except: pv=0
-            try: cv=float((c or "0").replace(",","."))
-            except: cv=0
-            items.append((d.strip(),q,pv,cv)); total+=q*pv; costos+=q*cv
-        if not items:
+            if not d.strip() and not sid: continue
+            try: sid_int=int(sid) if sid else None
+            except: sid_int=None
+            lineas.append({"sid":sid_int,"descripcion":d.strip(),"cantidad":q,"precio":praw,"costo":craw})
+        if not lineas:
             flash("Agregá al menos un artículo.","error"); return redirect("/venta")
-        con=db(); cur=con.cursor(); cid=None
-        if tel:
-            cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1",(tel,)); r=cur.fetchone(); cid=r["id"] if r else None
-        if not cid and (nombre or tel or email):
-            cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",(nombre or "Cliente mostrador",tel,email))
-            cid=cur.fetchone()["id"]
-        token=secrets.token_urlsafe(24)
-        cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico,garantia_dias) VALUES('',%s,%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token,garantia_dias))
-        vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-FAC-{datetime.datetime.now().year}-{vid:05d}"
-        cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
-        for it in items: cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario) VALUES(%s,%s,%s,%s,%s)",(vid,*it))
-        con.commit(); con.close()
+
+        con=db(); cur=con.cursor()
+        try:
+            # Bloqueamos los productos elegidos y validamos el total solicitado por producto.
+            demanda={}
+            for x in lineas:
+                if x["sid"]: demanda[x["sid"]]=demanda.get(x["sid"],0)+x["cantidad"]
+            productos={}
+            for sid,cant_pedida in demanda.items():
+                cur.execute("SELECT * FROM stock_productos WHERE id=%s AND activo=TRUE FOR UPDATE",(sid,))
+                pstock=cur.fetchone()
+                if not pstock:
+                    raise ValueError("Uno de los productos seleccionados ya no está disponible en Stock.")
+                disponible=int(pstock.get("cantidad") or 0)
+                if cant_pedida>disponible:
+                    raise ValueError(f"Stock insuficiente para {pstock['nombre']}: hay {disponible} y se intentan vender {cant_pedida}.")
+                productos[sid]=pstock
+
+            items=[]; total=0.0; costos=0.0
+            for x in lineas:
+                if x["sid"]:
+                    pstock=productos[x["sid"]]
+                    descripcion=x["descripcion"] or str(pstock.get("nombre") or "Artículo")
+                    try: pv=float((x["precio"] or str(pstock.get("precio_venta") or 0)).replace(",","."))
+                    except: pv=float(pstock.get("precio_venta") or 0)
+                    cv=float(pstock.get("costo") or 0)
+                else:
+                    descripcion=x["descripcion"]
+                    try: pv=float((x["precio"] or "0").replace(",","."))
+                    except: pv=0
+                    try: cv=float((x["costo"] or "0").replace(",","."))
+                    except: cv=0
+                items.append((descripcion,x["cantidad"],pv,cv,x["sid"]))
+                total+=x["cantidad"]*pv; costos+=x["cantidad"]*cv
+
+            cid=None
+            if tel:
+                cur.execute("SELECT id FROM clientes WHERE telefono=%s LIMIT 1",(tel,)); r=cur.fetchone(); cid=r["id"] if r else None
+            if not cid and (nombre or tel or email):
+                cur.execute("INSERT INTO clientes(nombre,telefono,email) VALUES(%s,%s,%s) RETURNING id",(nombre or "Cliente mostrador",tel,email))
+                cid=cur.fetchone()["id"]
+            token=secrets.token_urlsafe(24)
+            cur.execute("INSERT INTO ventas(numero_venta,cliente_id,forma_pago,total,costo_total,token_publico,garantia_dias) VALUES('',%s,%s,%s,%s,%s,%s) RETURNING id",(cid,forma,total,costos,token,garantia_dias))
+            vid=cur.fetchone()["id"]; numero=f"V-{datetime.datetime.now().year}-{vid:05d}"; comp=f"NR-FAC-{datetime.datetime.now().year}-{vid:05d}"
+            cur.execute("UPDATE ventas SET numero_venta=%s,comprobante_numero=%s WHERE id=%s",(numero,comp,vid))
+            for it in items:
+                cur.execute("INSERT INTO venta_items(venta_id,descripcion,cantidad,precio_unitario,costo_unitario,stock_producto_id) VALUES(%s,%s,%s,%s,%s,%s)",(vid,*it))
+
+            # Descontamos Stock una sola vez por producto y dejamos trazabilidad.
+            for sid,cant_vendida in demanda.items():
+                pstock=productos[sid]
+                anterior=int(pstock.get("cantidad") or 0); nueva=anterior-cant_vendida
+                cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,sid))
+                cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                               VALUES(%s,'Venta',%s,%s,%s,%s,%s,%s,%s)""",
+                            (sid,-cant_vendida,anterior,nueva,pstock.get("costo") or 0,pstock.get("proveedor"),numero,f"Venta directa / factura {comp}"))
+
+            con.commit(); con.close()
+        except ValueError as e:
+            con.rollback(); con.close(); flash(str(e),"error"); return redirect("/venta")
+        except Exception:
+            con.rollback(); con.close(); flash("No se pudo registrar la venta. No se modificó el stock.","error"); return redirect("/venta")
+
         flash(f"Venta {numero} registrada y factura {comp} emitida por $ {total:,.2f}.","success")
         return redirect(f"/venta_comprobante/{vid}")
-    return html_layout("Nueva venta",card_html("""
-    <h2 style='margin-top:0'>🛒 Nueva venta</h2><p style='color:#64748b'>Para cargadores, cables, fundas, vidrios y otras ventas sin reparación.</p>
+
+    con=db(); cur=con.cursor()
+    cur.execute("""SELECT id,codigo,nombre,grupo,marca,precio_venta,costo,cantidad
+                   FROM stock_productos WHERE activo=TRUE AND cantidad>0
+                   ORDER BY grupo,nombre""")
+    productos=cur.fetchall(); con.close()
+    opciones="".join(
+        f"<option value='{int(p['id'])}' data-nombre='{escape(str(p.get('nombre') or ''), quote=True)}' data-precio='{float(p.get('precio_venta') or 0)}' data-costo='{float(p.get('costo') or 0)}'>{escape(str(p.get('codigo') or '-'))} · {escape(str(p.get('nombre') or '-'))} · stock {int(p.get('cantidad') or 0)}</option>"
+        for p in productos
+    )
+    item_html=f"""<div class='item' style='display:grid;grid-template-columns:1.4fr 2fr .55fr .9fr .9fr;gap:8px;margin-bottom:8px'>
+      <select name='stock_producto_id' onchange='cargarStock(this)' style='padding:10px'><option value=''>Carga manual</option>{opciones}</select>
+      <input name='descripcion' required placeholder='Artículo' style='padding:10px'>
+      <input name='cantidad' type='number' min='1' value='1' style='padding:10px'>
+      <input name='precio' required placeholder='Precio venta' style='padding:10px'>
+      <input name='costo' placeholder='Costo' style='padding:10px'>
+    </div>"""
+    return html_layout("Nueva venta",card_html(f"""
+    <h2 style='margin-top:0'>🛒 Nueva venta</h2><p style='color:#64748b'>Elegí un artículo de Stock para descontarlo automáticamente, o usá “Carga manual”.</p>
     <form method='post'><h3>Cliente <small style='font-weight:normal'>(opcional)</small></h3>
     <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px'><input name='nombre' placeholder='Nombre' style='padding:10px'><input name='telefono' placeholder='WhatsApp' style='padding:10px'><input name='email' type='email' placeholder='Email' style='padding:10px'></div>
-    <h3>Artículos</h3><div id='items'><div class='item' style='display:grid;grid-template-columns:2fr .6fr 1fr 1fr;gap:8px;margin-bottom:8px'><input name='descripcion' required placeholder='Artículo' style='padding:10px'><input name='cantidad' type='number' min='1' value='1' style='padding:10px'><input name='precio' required placeholder='Precio venta' style='padding:10px'><input name='costo' placeholder='Costo' style='padding:10px'></div></div>
+    <h3>Artículos</h3><div id='items'>{item_html}</div>
     <button type='button' onclick='addItem()'>+ Agregar artículo</button>
+    <p style='font-size:13px;color:#64748b'>Los artículos elegidos desde Stock toman su costo real del inventario. El precio de venta se puede ajustar antes de facturar.</p>
     <h3>Pago y garantía</h3>
     <select name='forma_pago' required style='padding:10px;margin-right:8px'><option>Efectivo</option><option>Transferencia</option><option>Mercado Pago</option><option>Débito</option><option>Crédito</option><option>Otro</option></select>
     <select name='garantia_dias' style='padding:10px'><option value='0'>Sin garantía comercial</option><option value='30' selected>Garantía 30 días</option><option value='90'>Garantía 90 días</option><option value='180'>Garantía 180 días</option><option value='365'>Garantía 365 días</option></select><br>
     <button style='margin-top:16px;background:#059669;color:white;border:0;padding:12px 18px;border-radius:10px;font-weight:bold'>💾 Registrar venta y emitir factura</button></form>
-    <script>function addItem(){let d=document.querySelector('.item').cloneNode(true);d.querySelectorAll('input').forEach(x=>x.value=x.name==='cantidad'?'1':'');document.getElementById('items').appendChild(d)}</script>
+    <script>
+    function cargarStock(sel){{
+      const fila=sel.closest('.item'), op=sel.options[sel.selectedIndex];
+      const desc=fila.querySelector('[name="descripcion"]'), precio=fila.querySelector('[name="precio"]'), costo=fila.querySelector('[name="costo"]');
+      if(sel.value){{desc.value=op.dataset.nombre||'';precio.value=op.dataset.precio||'0';costo.value=op.dataset.costo||'0';costo.readOnly=true;}}
+      else{{desc.value='';precio.value='';costo.value='';costo.readOnly=false;}}
+    }}
+    function addItem(){{
+      let d=document.querySelector('.item').cloneNode(true);
+      d.querySelector('select').selectedIndex=0;
+      d.querySelectorAll('input').forEach(x=>{{x.value=x.name==='cantidad'?'1':'';x.readOnly=false;}});
+      document.getElementById('items').appendChild(d);
+    }}
+    </script>
     """))
 
 @app.get("/venta_comprobante/<int:vid>")
@@ -985,9 +1073,22 @@ def eliminar_venta():
         if request.form.get("confirmar")!="ELIMINAR":
             con.close()
             return html_layout("Confirmación",card_html("<h2>No se eliminó la venta</h2><p>Debés escribir ELIMINAR exactamente.</p>"))
+        cur.execute("""SELECT stock_producto_id,COALESCE(SUM(cantidad),0) cantidad
+                       FROM venta_items WHERE venta_id=%s AND stock_producto_id IS NOT NULL
+                       GROUP BY stock_producto_id""",(vid,))
+        reintegros=cur.fetchall()
+        for r in reintegros:
+            sid=int(r["stock_producto_id"]); cant=int(r["cantidad"] or 0)
+            cur.execute("SELECT * FROM stock_productos WHERE id=%s FOR UPDATE",(sid,)); pstock=cur.fetchone()
+            if pstock and cant>0:
+                anterior=int(pstock.get("cantidad") or 0); nueva=anterior+cant
+                cur.execute("UPDATE stock_productos SET cantidad=%s,fecha_actualizacion=NOW() WHERE id=%s",(nueva,sid))
+                cur.execute("""INSERT INTO stock_movimientos(producto_id,tipo,cantidad,cantidad_anterior,cantidad_nueva,costo_unitario,proveedor,referencia,observacion)
+                               VALUES(%s,'Reversión venta',%s,%s,%s,%s,%s,%s,%s)""",
+                            (sid,cant,anterior,nueva,pstock.get("costo") or 0,pstock.get("proveedor"),v["numero_venta"],"Reintegro automático por eliminación de venta de prueba"))
         cur.execute("DELETE FROM ventas WHERE id=%s",(vid,))
         con.commit(); con.close()
-        flash(f"Venta {v['numero_venta']} eliminada. También dejó de contar en Finanzas.","success")
+        flash(f"Venta {v['numero_venta']} eliminada. También dejó de contar en Finanzas y se reintegró el stock asociado.","success")
         return redirect("/ventas")
     con.close()
     return html_layout("Eliminar venta",card_html(f"""
