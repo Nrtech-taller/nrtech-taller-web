@@ -57,32 +57,263 @@ def html_layout(titulo, contenido):
     avisos = get_flashed_messages(with_categories=True)
     avisos_html = ""
     for categoria, mensaje in avisos:
-        if categoria == "error":
-            fondo, borde, color, icono = "#fef2f2", "#fecaca", "#991b1b", "❌"
-        else:
-            fondo, borde, color, icono = "#f0fdf4", "#bbf7d0", "#166534", "✅"
+        clase = "flash-error" if categoria == "error" else "flash-ok"
+        icono = "⚠️" if categoria == "error" else "✓"
         avisos_html += f"""
-        <div style="background:{fondo};border:1px solid {borde};color:{color};padding:13px 15px;border-radius:12px;margin-bottom:14px;font-weight:700;">
-          {icono} {escape(str(mensaje))}
+        <div class="flash {clase}">
+          <span class="flash-icon">{icono}</span>
+          <span>{escape(str(mensaje))}</span>
         </div>
         """
+
+    logueado = bool(session.get("login"))
+    ruta = request.path
+
+    def nav_item(href, icono, texto, match=None):
+        prefijos = match if isinstance(match, (list, tuple)) else [match or href]
+        activo = any(ruta == p or (p != "/" and ruta.startswith(p)) for p in prefijos)
+        return f"""<a class="nav-item {'active' if activo else ''}" href="{href}">
+          <span class="nav-icon">{icono}</span><span>{texto}</span>
+        </a>"""
+
+    sidebar = ""
+    mobile_nav = ""
+    topbar_html = ""
+    login_header = ""
+
+    if logueado:
+        menu = f"""
+          <div class="nav-section">TALLER</div>
+          {nav_item("/", "⌂", "Inicio", ["/"])}
+          {nav_item("/crear", "＋", "Nueva orden")}
+          {nav_item("/ver_ordenes", "▤", "Órdenes", ["/ver_ordenes","/editar","/actualizar","/entrega"])}
+          {nav_item("/buscar", "⌕", "Buscar")}
+          {nav_item("/clientes", "👤", "Clientes")}
+
+          <div class="nav-section">COMERCIAL</div>
+          {nav_item("/venta", "🛒", "Nueva venta", ["/venta"])}
+          {nav_item("/ventas", "◫", "Ventas", ["/ventas","/venta_comprobante"])}
+          {nav_item("/facturacion", "▧", "Facturación")}
+          {nav_item("/stock", "▣", "Stock", ["/stock","/proveedores"])}
+          {nav_item("/garantias", "◈", "Garantías", ["/garantias","/garantia"])}
+
+          <div class="nav-section">GESTIÓN</div>
+          {nav_item("/finanzas", "◒", "Finanzas", ["/finanzas","/gastos","/cobros"])}
+          {nav_item("/solicitudes_ingreso", "↗", "Autoregistro")}
+          {nav_item("/difusion", "◉", "Difusión")}
+
+          <div class="nav-section">SISTEMA</div>
+          {nav_item("/configuracion_empresa", "⚙", "Configuración")}
+        """
+
+        sidebar = f"""
+        <aside class="sidebar">
+          <a href="/" class="brand">
+            <div class="brand-mark">NR</div>
+            <div>
+              <div class="brand-name">NR Tech</div>
+              <div class="brand-sub">Gestión de taller</div>
+            </div>
+          </a>
+          <nav class="side-nav">{menu}</nav>
+          <a class="logout-link" href="/logout"><span>↪</span> Cerrar sesión</a>
+        </aside>
+        """
+
+        mobile_nav = f"""
+        <div class="mobile-top">
+          <a href="/" class="mobile-brand"><span class="brand-mark small">NR</span><b>NR Tech</b></a>
+          <a href="/crear" class="mobile-action">＋ Orden</a>
+        </div>
+        <div class="mobile-menu">
+          {nav_item("/", "⌂", "Inicio", ["/"])}
+          {nav_item("/ver_ordenes", "▤", "Órdenes", ["/ver_ordenes","/editar","/actualizar","/entrega"])}
+          {nav_item("/stock", "▣", "Stock", ["/stock","/proveedores"])}
+          {nav_item("/garantias", "◈", "Garantías", ["/garantias","/garantia"])}
+          {nav_item("/finanzas", "◒", "Finanzas", ["/finanzas","/gastos","/cobros"])}
+          {nav_item("/clientes", "👤", "Clientes")}
+          {nav_item("/ventas", "◫", "Ventas", ["/ventas","/venta_comprobante"])}
+        </div>
+        """
+
+        topbar_html = f"""
+        <header class="topbar">
+          <div>
+            <h1 class="page-title">{escape(str(titulo))}</h1>
+            <div class="topbar-meta">NR Tech · Sistema de gestión</div>
+          </div>
+          <div class="topbar-meta">Panel administrativo</div>
+        </header>
+        """
+    else:
+        login_header = """
+        <div class="login-brand">
+          <div class="brand-mark">NR</div>
+          <h1>NR Tech</h1>
+          <p>Sistema de gestión de taller</p>
+        </div>
+        """
+
+    shell_class = "app-shell" if logueado else "login-shell"
+    main_class = "main-area" if logueado else "login-area"
+
     return f"""
-    <html>
+    <!doctype html>
+    <html lang="es">
       <head>
         <meta charset="utf-8">
-        <title>{titulo}</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+        <meta name="theme-color" content="#111827">
+        <title>{escape(str(titulo))} · NR Tech</title>
+        <style>
+          :root {{
+            --bg:#f5f7fb;
+            --surface:#ffffff;
+            --border:#e5e7eb;
+            --text:#111827;
+            --muted:#6b7280;
+            --primary:#2563eb;
+            --success:#16a34a;
+            --danger:#dc2626;
+            --radius:16px;
+            --shadow:0 8px 28px rgba(15,23,42,.07);
+          }}
+          *{{box-sizing:border-box}}
+          html{{scroll-behavior:smooth}}
+          body{{
+            margin:0;
+            font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;
+            background:var(--bg);
+            color:var(--text);
+            line-height:1.45;
+          }}
+          a{{color:var(--primary)}}
+          .app-shell{{min-height:100vh}}
+          .sidebar{{
+            position:fixed;inset:0 auto 0 0;width:248px;
+            background:linear-gradient(180deg,#111827 0%,#0f172a 100%);
+            padding:22px 14px 18px;color:#fff;display:flex;flex-direction:column;
+            z-index:50;box-shadow:8px 0 30px rgba(15,23,42,.08);
+          }}
+          .brand{{display:flex;align-items:center;gap:11px;padding:3px 8px 21px;text-decoration:none;color:white}}
+          .brand-mark{{
+            width:42px;height:42px;border-radius:13px;display:grid;place-items:center;
+            background:linear-gradient(135deg,#3b82f6,#6366f1);
+            color:white;font-weight:900;letter-spacing:-1px;box-shadow:0 6px 18px rgba(59,130,246,.28);
+          }}
+          .brand-mark.small{{width:34px;height:34px;border-radius:10px;font-size:13px}}
+          .brand-name{{font-size:18px;font-weight:850;letter-spacing:-.3px}}
+          .brand-sub{{font-size:11px;color:#94a3b8;margin-top:1px}}
+          .side-nav{{overflow:auto;padding-right:3px;flex:1}}
+          .nav-section{{font-size:10px;font-weight:800;letter-spacing:1.15px;color:#64748b;margin:20px 10px 7px}}
+          .nav-item{{
+            display:flex;align-items:center;gap:11px;padding:10px 11px;margin:3px 0;
+            border-radius:10px;color:#cbd5e1;text-decoration:none;font-size:13.5px;font-weight:650;
+            transition:.15s ease;
+          }}
+          .nav-item:hover{{background:rgba(255,255,255,.07);color:white}}
+          .nav-item.active{{background:#2563eb;color:white;box-shadow:0 5px 14px rgba(37,99,235,.25)}}
+          .nav-icon{{width:19px;text-align:center;font-size:16px;line-height:1}}
+          .logout-link{{
+            display:flex;gap:10px;align-items:center;color:#94a3b8;text-decoration:none;
+            padding:11px;border-top:1px solid rgba(255,255,255,.08);margin-top:12px;font-size:13px;
+          }}
+          .logout-link:hover{{color:white}}
+          .main-area{{margin-left:248px;min-height:100vh}}
+          .topbar{{
+            height:72px;background:rgba(255,255,255,.92);backdrop-filter:blur(12px);
+            border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;
+            padding:0 28px;position:sticky;top:0;z-index:35;
+          }}
+          .page-title{{font-size:20px;font-weight:820;letter-spacing:-.35px;margin:0}}
+          .topbar-meta{{font-size:12px;color:var(--muted)}}
+          .content-wrap{{max-width:1440px;margin:0 auto;padding:26px 28px 42px}}
+          .mobile-top,.mobile-menu{{display:none}}
+          .flash{{
+            display:flex;gap:10px;align-items:center;padding:12px 14px;border-radius:12px;
+            margin-bottom:14px;font-weight:650;box-shadow:0 3px 12px rgba(15,23,42,.04)
+          }}
+          .flash-ok{{background:#f0fdf4;border:1px solid #bbf7d0;color:#166534}}
+          .flash-error{{background:#fef2f2;border:1px solid #fecaca;color:#991b1b}}
+          .flash-icon{{font-weight:900}}
+          .card{{
+            background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
+            padding:22px;box-shadow:var(--shadow);
+          }}
+          input,select,textarea{{
+            font:inherit;border:1px solid #d1d5db;border-radius:9px;background:white;color:var(--text);
+            outline:none;transition:border-color .15s,box-shadow .15s;
+          }}
+          input:focus,select:focus,textarea:focus{{
+            border-color:#60a5fa!important;box-shadow:0 0 0 3px rgba(59,130,246,.12);
+          }}
+          button{{
+            font:inherit;border-radius:9px;cursor:pointer;transition:transform .08s ease,filter .12s ease;
+          }}
+          button:hover{{filter:brightness(.98)}}
+          button:active{{transform:translateY(1px)}}
+          table{{border-collapse:separate!important;border-spacing:0;width:100%;font-size:13.5px}}
+          th{{font-size:11px;text-transform:uppercase;letter-spacing:.45px;color:#64748b;background:#f8fafc}}
+          th,td{{padding:11px 10px!important;border-bottom:1px solid #edf0f3!important}}
+          tr:last-child td{{border-bottom:0!important}}
+          tbody tr:hover td{{background:#fafcff}}
+          details{{
+            border:1px solid var(--border)!important;border-radius:13px!important;
+            background:white!important;margin-bottom:10px!important;overflow:hidden;
+          }}
+          summary{{padding:13px 15px!important;background:#f8fafc!important;cursor:pointer;font-weight:750!important}}
+          .login-shell{{
+            min-height:100vh;display:grid;place-items:center;padding:24px;
+            background:radial-gradient(circle at 15% 15%,rgba(59,130,246,.12),transparent 30%),
+                       radial-gradient(circle at 85% 85%,rgba(99,102,241,.10),transparent 30%),#f5f7fb
+          }}
+          .login-area{{width:min(100%,680px)}}
+          .login-brand{{text-align:center;margin-bottom:18px}}
+          .login-brand .brand-mark{{margin:auto}}
+          .login-brand h1{{margin:10px 0 3px;font-size:24px}}
+          .login-brand p{{margin:0;color:var(--muted);font-size:13px}}
+          @media(max-width:900px){{
+            .sidebar{{display:none}}
+            .main-area{{margin-left:0}}
+            .topbar{{display:none}}
+            .mobile-top{{
+              display:flex;position:sticky;top:0;z-index:45;height:60px;padding:0 14px;
+              align-items:center;justify-content:space-between;background:#111827;color:white;
+            }}
+            .mobile-brand{{display:flex;align-items:center;gap:9px;color:white;text-decoration:none}}
+            .mobile-action{{background:#2563eb;color:white;text-decoration:none;padding:8px 11px;border-radius:9px;font-size:12px;font-weight:800}}
+            .mobile-menu{{
+              display:flex;gap:5px;overflow-x:auto;background:#fff;border-bottom:1px solid var(--border);
+              padding:8px 9px;position:sticky;top:60px;z-index:44;scrollbar-width:none;
+            }}
+            .mobile-menu::-webkit-scrollbar{{display:none}}
+            .mobile-menu .nav-item{{flex:0 0 auto;color:#475569;background:#f8fafc;margin:0;padding:8px 10px;font-size:12px}}
+            .mobile-menu .nav-item.active{{color:white;background:#2563eb}}
+            .mobile-menu .nav-icon{{width:auto}}
+            .content-wrap{{padding:16px 12px 32px}}
+            .card{{padding:15px;border-radius:14px}}
+            table{{font-size:12.5px}}
+            th,td{{padding:9px 8px!important}}
+          }}
+          @media(max-width:560px){{
+            .content-wrap{{padding:12px 9px 28px}}
+            .card{{padding:12px}}
+            input,select,textarea{{max-width:100%}}
+          }}
+        </style>
       </head>
-      <body style="margin:0; font-family:Arial, sans-serif; background:#f3f6fb; color:#111827;">
-        <div style="max-width:1100px; margin:0 auto; padding:24px;">
-          <div style="background:linear-gradient(135deg,#0f172a,#1d4ed8); color:white; border-radius:18px; padding:24px 28px; box-shadow:0 10px 30px rgba(0,0,0,0.12);">
-            <h1 style="margin:0; font-size:28px;">NR Tech</h1>
-            <p style="margin:8px 0 0 0; opacity:0.92;">Sistema de gestión de reparaciones</p>
-          </div>
-
-          <div style="margin-top:18px;">
-            {avisos_html}
-            {contenido}
-          </div>
+      <body>
+        <div class="{shell_class}">
+          {sidebar}
+          <main class="{main_class}">
+            {mobile_nav}
+            {topbar_html}
+            {login_header}
+            <div class="content-wrap">
+              {avisos_html}
+              {contenido}
+            </div>
+          </main>
         </div>
       </body>
     </html>
@@ -91,7 +322,7 @@ def html_layout(titulo, contenido):
 
 def card_html(contenido):
     return f"""
-    <div style="background:white; border:1px solid #e5e7eb; border-radius:18px; padding:22px; box-shadow:0 8px 24px rgba(15,23,42,0.06);">
+    <div class="card">
       {contenido}
     </div>
     """
@@ -716,38 +947,79 @@ def home():
         """
 
     contenido = f"""
+    <style>
+      .dash-welcome{{display:flex;justify-content:space-between;align-items:end;gap:16px;margin-bottom:18px}}
+      .dash-welcome h2{{font-size:25px;letter-spacing:-.5px;margin:0 0 4px}}
+      .dash-welcome p{{margin:0;color:#64748b}}
+      .kpi-grid{{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin-bottom:20px}}
+      .kpi{{background:white;border:1px solid #e5e7eb;border-radius:14px;padding:15px 16px;min-height:90px}}
+      .kpi-label{{font-size:11px;text-transform:uppercase;letter-spacing:.55px;color:#64748b;font-weight:750}}
+      .kpi-value{{font-size:27px;font-weight:900;letter-spacing:-.7px;margin-top:5px}}
+      .kpi-note{{font-size:11px;color:#94a3b8;margin-top:2px}}
+      .dash-grid{{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,.75fr);gap:16px}}
+      .panel{{background:white;border:1px solid #e5e7eb;border-radius:16px;padding:18px;box-shadow:0 6px 22px rgba(15,23,42,.04)}}
+      .panel-head{{display:flex;justify-content:space-between;align-items:center;margin-bottom:13px}}
+      .panel-head h3{{margin:0;font-size:15px}}
+      .quick-grid{{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}}
+      .quick{{display:flex;gap:12px;align-items:center;border:1px solid #e5e7eb;border-radius:13px;padding:14px;text-decoration:none;color:#111827;transition:.15s}}
+      .quick:hover{{border-color:#bfdbfe;background:#f8fbff;transform:translateY(-1px)}}
+      .quick-icon{{width:38px;height:38px;border-radius:11px;display:grid;place-items:center;background:#eff6ff;font-size:18px}}
+      .quick b{{display:block;font-size:13px}}
+      .quick small{{color:#64748b;font-size:11px}}
+      .status-row{{display:grid;grid-template-columns:1fr auto;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9;font-size:13px}}
+      .status-row:last-child{{border-bottom:0}}
+      .status-count{{min-width:30px;text-align:center;background:#f1f5f9;border-radius:999px;padding:2px 8px;font-weight:800}}
+      .debt-card{{background:#fff7f7;border:1px solid #fecaca;border-radius:14px;padding:14px;text-decoration:none;color:#111827;display:block;margin-top:12px}}
+      .debt-card .amount{{font-size:23px;font-weight:900;color:#b91c1c}}
+      @media(max-width:1100px){{.kpi-grid{{grid-template-columns:repeat(2,1fr)}}.dash-grid{{grid-template-columns:1fr}}}}
+      @media(max-width:620px){{.kpi-grid{{grid-template-columns:repeat(2,1fr);gap:8px}}.kpi{{padding:12px;min-height:82px}}.kpi-value{{font-size:22px}}.quick-grid{{grid-template-columns:1fr}}.dash-welcome{{display:block}}}}
+    </style>
+
+    <div class="dash-welcome">
+      <div>
+        <h2>Panel general</h2>
+        <p>Estado actual del taller y accesos rápidos.</p>
+      </div>
+      <a href="/crear" style="background:#2563eb;color:white;text-decoration:none;padding:10px 14px;border-radius:10px;font-weight:800;font-size:13px">＋ Nueva orden</a>
+    </div>
+
     {stock_banner}
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:20px;">
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Recibidos</small><div style="font-size:27px;font-weight:800;">{resumen['Recibido en taller']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Diagnóstico</small><div style="font-size:27px;font-weight:800;">{resumen['En diagnóstico']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando aprobación</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando aprobación']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Esperando repuesto</small><div style="font-size:27px;font-weight:800;">{resumen['Esperando repuesto']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>En reparación</small><div style="font-size:27px;font-weight:800;">{resumen['En reparación']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Listos</small><div style="font-size:27px;font-weight:800;">{resumen['Listo para retirar']}</div></div>
-      <div style="background:white;border:1px solid #e5e7eb;border-radius:16px;padding:16px;"><small>Entregados</small><div style="font-size:27px;font-weight:800;">{resumen['Entregado']}</div></div>
+
+    <div class="kpi-grid">
+      <div class="kpi"><div class="kpi-label">En taller</div><div class="kpi-value">{resumen['Recibido en taller'] + resumen['En diagnóstico'] + resumen['En reparación']}</div><div class="kpi-note">Recibidos, diagnóstico y reparación</div></div>
+      <div class="kpi"><div class="kpi-label">Esperando</div><div class="kpi-value">{resumen['Esperando aprobación'] + resumen['Esperando repuesto']}</div><div class="kpi-note">Aprobación o repuesto</div></div>
+      <div class="kpi"><div class="kpi-label">Listos para retirar</div><div class="kpi-value" style="color:#166534">{resumen['Listo para retirar']}</div><div class="kpi-note">Equipos terminados</div></div>
       <a href="/finanzas_pendientes" style="text-decoration:none;color:inherit">
-        <div style="background:#fef2f2;border:1px solid #fecaca;border-radius:16px;padding:16px;cursor:pointer;">
-          <small>💸 Por cobrar</small>
-          <div style="font-size:27px;font-weight:800;color:#b91c1c;">$ {pendiente_inicio:,.0f}</div>
-        </div>
+        <div class="kpi" style="border-color:#fecaca;background:#fffafa"><div class="kpi-label">Saldo por cobrar</div><div class="kpi-value" style="color:#b91c1c">$ {pendiente_inicio:,.0f}</div><div class="kpi-note">Tocar para ver pendientes</div></div>
       </a>
     </div>
 
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;">
-      <a href="/venta" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛒 Nueva venta</h3><p style="margin:0;color:#6b7280;">Accesorios y ventas de mostrador.</p></div></a>
-      <a href="/ventas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📚 Ventas</h3><p style="margin:0;color:#6b7280;">Historial de ventas y facturas emitidas.</p></div></a>
-      <a href="/facturacion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #c7d2fe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📑 Facturación</h3><p style="margin:0;color:#6b7280;">Archivo mensual de todas las facturas.</p></div></a>
-      <a href="/stock" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #fde68a;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📦 Stock</h3><p style="margin:0;color:#6b7280;">Repuestos, accesorios y consumibles.</p></div></a>
-      <a href="/crear" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">➕ Crear orden</h3><p style="margin:0;color:#6b7280;">Registrar un nuevo equipo.</p></div></a>
-      <a href="/buscar" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🔎 Buscar orden</h3><p style="margin:0;color:#6b7280;">Buscar por cliente, IMEI o número.</p></div></a>
-      <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
-      <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
-      <a href="/solicitudes_ingreso" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📲 Autoregistro cliente</h3><p style="margin:0;color:#6b7280;">Generar link/QR y revisar solicitudes.</p></div></a>
-      <a href="/garantias" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #ddd6fe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛡️ Garantías</h3><p style="margin:0;color:#6b7280;">Vigencias, vencimientos y reclamos.</p></div></a>
-      <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
-      <a href="/difusion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📢 Difusión WhatsApp</h3><p style="margin:0;color:#6b7280;">Clientes que aceptaron recibir promociones.</p></div></a>
-      <a href="/configuracion_empresa" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">⚙️ Datos de NR Tech</h3><p style="margin:0;color:#6b7280;">Datos comerciales y fiscales del taller.</p></div></a>
-      <a href="/logout" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🚪 Salir</h3><p style="margin:0;color:#6b7280;">Cerrar sesión.</p></div></a>
+    <div class="dash-grid">
+      <section class="panel">
+        <div class="panel-head"><h3>Acciones rápidas</h3><span style="font-size:11px;color:#94a3b8">Operación diaria</span></div>
+        <div class="quick-grid">
+          <a class="quick" href="/crear"><span class="quick-icon">＋</span><span><b>Nueva orden</b><small>Ingresar un equipo al taller</small></span></a>
+          <a class="quick" href="/venta"><span class="quick-icon">🛒</span><span><b>Nueva venta</b><small>Venta directa o accesorio</small></span></a>
+          <a class="quick" href="/buscar"><span class="quick-icon">⌕</span><span><b>Buscar equipo</b><small>Orden, cliente, IMEI o serie</small></span></a>
+          <a class="quick" href="/stock"><span class="quick-icon">▣</span><span><b>Stock</b><small>Inventario, compras y alertas</small></span></a>
+          <a class="quick" href="/garantias"><span class="quick-icon">◈</span><span><b>Garantías</b><small>Vigencias y reingresos</small></span></a>
+          <a class="quick" href="/finanzas"><span class="quick-icon">◒</span><span><b>Finanzas</b><small>Ingresos, costos y ganancia</small></span></a>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <div class="panel-head"><h3>Estado de reparaciones</h3><a href="/ver_ordenes" style="font-size:11px;text-decoration:none;font-weight:750">Ver todas</a></div>
+        <div class="status-row"><span>Recibido en taller</span><span class="status-count">{resumen['Recibido en taller']}</span></div>
+        <div class="status-row"><span>En diagnóstico</span><span class="status-count">{resumen['En diagnóstico']}</span></div>
+        <div class="status-row"><span>Esperando aprobación</span><span class="status-count">{resumen['Esperando aprobación']}</span></div>
+        <div class="status-row"><span>Esperando repuesto</span><span class="status-count">{resumen['Esperando repuesto']}</span></div>
+        <div class="status-row"><span>En reparación</span><span class="status-count">{resumen['En reparación']}</span></div>
+        <div class="status-row"><span>Listo para retirar</span><span class="status-count">{resumen['Listo para retirar']}</span></div>
+        <a class="debt-card" href="/finanzas_pendientes">
+          <small style="color:#7f1d1d">Cuentas pendientes</small>
+          <div class="amount">$ {pendiente_inicio:,.0f}</div>
+        </a>
+      </aside>
     </div>
     """
     return html_layout("Inicio", contenido)
