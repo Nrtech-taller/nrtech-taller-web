@@ -281,6 +281,22 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha_alta TIMESTAMP DEFAULT NOW()
     );
     """)
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS garantia_reclamos (
+        id SERIAL PRIMARY KEY,
+        tipo TEXT NOT NULL,
+        orden_id INTEGER REFERENCES ordenes(id) ON DELETE CASCADE,
+        venta_id INTEGER REFERENCES ventas(id) ON DELETE CASCADE,
+        fecha_reclamo DATE NOT NULL DEFAULT CURRENT_DATE,
+        motivo TEXT NOT NULL,
+        diagnostico TEXT,
+        solucion TEXT,
+        estado TEXT NOT NULL DEFAULT 'Abierto',
+        observaciones TEXT,
+        fecha_cierre DATE,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
     # Corrige órdenes antiguas marcadas como Entregado sin fecha de entrega.
     # Si tienen comprobante, usamos su fecha; si no, la fecha actual.
     cur.execute("""
@@ -717,6 +733,7 @@ def home():
       <a href="/ver_ordenes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📋 Ver órdenes</h3><p style="margin:0;color:#6b7280;">Gestionar reparaciones.</p></div></a>
       <a href="/clientes" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">👤 Clientes</h3><p style="margin:0;color:#6b7280;">Fichas e historial.</p></div></a>
       <a href="/solicitudes_ingreso" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📲 Autoregistro cliente</h3><p style="margin:0;color:#6b7280;">Generar link/QR y revisar solicitudes.</p></div></a>
+      <a href="/garantias" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #ddd6fe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">🛡️ Garantías</h3><p style="margin:0;color:#6b7280;">Vigencias, vencimientos y reclamos.</p></div></a>
       <a href="/finanzas" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bfdbfe;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">💰 Finanzas</h3><p style="margin:0;color:#6b7280;">Facturación, costos, ganancia y control de Monotributo.</p></div></a>
       <a href="/difusion" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #bbf7d0;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">📢 Difusión WhatsApp</h3><p style="margin:0;color:#6b7280;">Clientes que aceptaron recibir promociones.</p></div></a>
       <a href="/configuracion_empresa" style="text-decoration:none;color:inherit;"><div style="background:white;border:1px solid #e5e7eb;border-radius:18px;padding:22px;"><h3 style="margin:0 0 8px;">⚙️ Datos de NR Tech</h3><p style="margin:0;color:#6b7280;">Datos comerciales y fiscales del taller.</p></div></a>
@@ -2660,6 +2677,346 @@ def finanzas_detalle():
       <p style='font-size:12px;color:#64748b;margin-top:14px'>
         Ganancia bruta = ingreso − costo registrado de repuestos/artículos. No descuenta todavía otros gastos generales del taller.
       </p>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.get("/garantias")
+def garantias():
+    if not session.get("login"):
+        return redirect("/login")
+
+    hoy=datetime.date.today()
+    q=request.args.get("q","").strip()
+    estado=request.args.get("estado","activas").strip().lower()
+    if estado not in ("activas","vencidas","todas"):
+        estado="activas"
+
+    con=db();cur=con.cursor()
+    like=f"%{q}%"
+
+    cur.execute("""
+      SELECT 'Reparación' AS tipo,o.id AS ref_id,o.numero_orden AS referencia,
+             o.comprobante_numero AS factura,c.nombre,c.telefono,
+             o.tipo_equipo,o.marca,o.modelo,o.imei,o.numero_serie,
+             o.fecha_entregado AS inicio,COALESCE(o.garantia_dias,30) AS dias,
+             (o.fecha_entregado + COALESCE(o.garantia_dias,30))::date AS vence,
+             (SELECT COUNT(*) FROM garantia_reclamos gr WHERE gr.orden_id=o.id AND gr.estado<>'Cerrado') AS reclamos_abiertos
+      FROM ordenes o JOIN clientes c ON c.id=o.cliente_id
+      WHERE o.estado='Entregado' AND o.fecha_entregado IS NOT NULL AND COALESCE(o.garantia_dias,30)>0
+        AND (%s='' OR o.numero_orden ILIKE %s OR COALESCE(o.comprobante_numero,'') ILIKE %s OR c.nombre ILIKE %s
+             OR COALESCE(o.imei,'') ILIKE %s OR COALESCE(o.numero_serie,'') ILIKE %s OR COALESCE(o.modelo,'') ILIKE %s)
+      UNION ALL
+      SELECT 'Venta' AS tipo,v.id AS ref_id,v.numero_venta AS referencia,
+             v.comprobante_numero AS factura,COALESCE(c.nombre,'Consumidor final') AS nombre,c.telefono,
+             'Venta' AS tipo_equipo,NULL::text AS marca,NULL::text AS modelo,NULL::text AS imei,NULL::text AS numero_serie,
+             v.fecha::date AS inicio,COALESCE(v.garantia_dias,30) AS dias,
+             (v.fecha::date + COALESCE(v.garantia_dias,30))::date AS vence,
+             (SELECT COUNT(*) FROM garantia_reclamos gr WHERE gr.venta_id=v.id AND gr.estado<>'Cerrado') AS reclamos_abiertos
+      FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id
+      WHERE COALESCE(v.garantia_dias,30)>0
+        AND (%s='' OR v.numero_venta ILIKE %s OR COALESCE(v.comprobante_numero,'') ILIKE %s OR COALESCE(c.nombre,'Consumidor final') ILIKE %s)
+      ORDER BY vence ASC,referencia DESC
+    """,(q,like,like,like,like,like,like,q,like,like,like))
+    registros=cur.fetchall()
+
+    cur.execute("SELECT COUNT(*) AS n FROM garantia_reclamos WHERE estado<>'Cerrado'")
+    reclamos_abiertos=int((cur.fetchone() or {}).get("n") or 0)
+    con.close()
+
+    activas=[x for x in registros if x.get("vence") and x["vence"]>=hoy]
+    vencidas=[x for x in registros if x.get("vence") and x["vence"]<hoy]
+    if estado=="activas":
+        mostrar=activas
+    elif estado=="vencidas":
+        mostrar=vencidas
+    else:
+        mostrar=registros
+
+    filas=""
+    for x in mostrar:
+        vence=x.get("vence")
+        inicio=x.get("inicio")
+        restantes=(vence-hoy).days if vence else 0
+        vigente=bool(vence and vence>=hoy)
+        if vigente:
+            if restantes<=15:
+                badge=f"<span style='background:#fef3c7;color:#92400e;padding:5px 9px;border-radius:999px;font-weight:bold'>Vence en {restantes} días</span>"
+            else:
+                badge=f"<span style='background:#dcfce7;color:#166534;padding:5px 9px;border-radius:999px;font-weight:bold'>Vigente · {restantes} días</span>"
+        else:
+            badge="<span style='background:#fee2e2;color:#991b1b;padding:5px 9px;border-radius:999px;font-weight:bold'>Vencida</span>"
+
+        equipo=" ".join([str(x.get("tipo_equipo") or ""),str(x.get("marca") or ""),str(x.get("modelo") or "")]).strip()
+        identidad=[]
+        if x.get("imei"): identidad.append(f"IMEI {escape(str(x.get('imei')))}")
+        if x.get("numero_serie"): identidad.append(f"Serie {escape(str(x.get('numero_serie')))}")
+        identidad_txt=" · ".join(identidad)
+        detalle_url=(f"/editar?numero={quote(str(x.get('referencia') or ''))}" if x.get("tipo")=="Reparación" else f"/venta_comprobante/{int(x['ref_id'])}")
+        reclamo_url=f"/garantias/reclamo/nuevo?tipo={'orden' if x.get('tipo')=='Reparación' else 'venta'}&id={int(x['ref_id'])}"
+        historial_url=f"/garantias/historial?tipo={'orden' if x.get('tipo')=='Reparación' else 'venta'}&id={int(x['ref_id'])}"
+        reclamos=int(x.get("reclamos_abiertos") or 0)
+        filas+=f"""
+        <tr>
+          <td>{badge}</td>
+          <td><b>{escape(str(x.get('tipo') or '-'))}</b></td>
+          <td><a href='{detalle_url}' style='color:#2563eb;font-weight:bold'>{escape(str(x.get('referencia') or '-'))}</a><br><small>{escape(str(x.get('factura') or '-'))}</small></td>
+          <td><b>{escape(str(x.get('nombre') or '-'))}</b><br><small>{escape(str(x.get('telefono') or ''))}</small></td>
+          <td>{escape(equipo or '-')}<br><small>{identidad_txt}</small></td>
+          <td>{inicio.strftime('%d/%m/%Y') if inicio else '-'}</td>
+          <td>{vence.strftime('%d/%m/%Y') if vence else '-'}</td>
+          <td>{int(x.get('dias') or 0)}</td>
+          <td>{f"<span style='color:#b91c1c;font-weight:bold'>{reclamos} abierto/s</span>" if reclamos else '—'}</td>
+          <td style='white-space:nowrap'>
+            <a href='{reclamo_url}' style='background:#7c3aed;color:white;padding:7px 9px;border-radius:8px;text-decoration:none;font-weight:bold;margin-right:5px'>➕ Reclamo</a>
+            <a href='{historial_url}' style='color:#2563eb;font-weight:bold'>Historial</a>
+          </td>
+        </tr>"""
+
+    tabs=f"""
+      <a href='/garantias?estado=activas&q={quote(q)}' style='padding:8px 11px;border-radius:9px;text-decoration:none;font-weight:bold;background:{'#7c3aed' if estado=='activas' else '#f3f4f6'};color:{'white' if estado=='activas' else '#374151'}'>Activas ({len(activas)})</a>
+      <a href='/garantias?estado=vencidas&q={quote(q)}' style='padding:8px 11px;border-radius:9px;text-decoration:none;font-weight:bold;background:{'#7c3aed' if estado=='vencidas' else '#f3f4f6'};color:{'white' if estado=='vencidas' else '#374151'}'>Vencidas ({len(vencidas)})</a>
+      <a href='/garantias?estado=todas&q={quote(q)}' style='padding:8px 11px;border-radius:9px;text-decoration:none;font-weight:bold;background:{'#7c3aed' if estado=='todas' else '#f3f4f6'};color:{'white' if estado=='todas' else '#374151'}'>Todas ({len(registros)})</a>
+    """
+
+    return html_layout("Garantías",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🛡️ Garantías</h2><p style='color:#64748b;margin:6px 0'>Reparaciones y ventas con garantía comercial.</p></div>
+        <div><a href='/garantias/reclamos' style='background:#b91c1c;color:white;padding:9px 12px;border-radius:9px;text-decoration:none;font-weight:bold'>📋 Reclamos abiertos ({reclamos_abiertos})</a> &nbsp; <a href='/'>🏠 Inicio</a></div>
+      </div>
+
+      <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin:15px 0'>
+        <div style='background:#f0fdf4;padding:14px;border-radius:12px'><small>Garantías activas</small><div style='font-size:26px;font-weight:900'>{len(activas)}</div></div>
+        <div style='background:#fef2f2;padding:14px;border-radius:12px'><small>Garantías vencidas</small><div style='font-size:26px;font-weight:900'>{len(vencidas)}</div></div>
+        <div style='background:#f5f3ff;padding:14px;border-radius:12px'><small>Reclamos abiertos</small><div style='font-size:26px;font-weight:900'>{reclamos_abiertos}</div></div>
+      </div>
+
+      <form method='get' style='background:#f8fafc;padding:12px;border-radius:12px;margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap'>
+        <input type='hidden' name='estado' value='{estado}'>
+        <input name='q' value='{escape(q,quote=True)}' placeholder='Cliente, orden, IMEI, serie o factura...' style='padding:9px;min-width:320px;flex:1'>
+        <button style='padding:9px 13px'>Buscar</button>
+        {f"<a href='/garantias?estado={estado}' style='padding:9px;text-decoration:none'>Limpiar</a>" if q else ''}
+      </form>
+      <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px'>{tabs}</div>
+
+      <div style='overflow-x:auto'>
+        <table style='width:100%;min-width:1250px'>
+          <tr style='background:#f5f3ff'><th>Estado</th><th>Origen</th><th>Orden / Venta</th><th>Cliente</th><th>Equipo</th><th>Inicio</th><th>Vence</th><th>Días</th><th>Reclamos</th><th></th></tr>
+          {filas or "<tr><td colspan='10' style='padding:20px;text-align:center;color:#64748b'>No hay garantías para mostrar.</td></tr>"}
+        </table>
+      </div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.route("/garantias/reclamo/nuevo",methods=["GET","POST"])
+def garantia_reclamo_nuevo():
+    if not session.get("login"):
+        return redirect("/login")
+    tipo=request.values.get("tipo","").strip().lower()
+    try: ref_id=int(request.values.get("id") or 0)
+    except Exception: ref_id=0
+    if tipo not in ("orden","venta") or ref_id<=0:
+        return redirect("/garantias")
+
+    con=db();cur=con.cursor()
+    if tipo=="orden":
+        cur.execute("""SELECT o.id,o.numero_orden AS referencia,o.comprobante_numero AS factura,c.nombre,c.telefono,
+                              o.tipo_equipo,o.marca,o.modelo,o.imei,o.fecha_entregado AS inicio,o.garantia_dias AS dias
+                       FROM ordenes o JOIN clientes c ON c.id=o.cliente_id WHERE o.id=%s""",(ref_id,))
+    else:
+        cur.execute("""SELECT v.id,v.numero_venta AS referencia,v.comprobante_numero AS factura,COALESCE(c.nombre,'Consumidor final') AS nombre,c.telefono,
+                              'Venta' AS tipo_equipo,NULL::text AS marca,NULL::text AS modelo,NULL::text AS imei,v.fecha::date AS inicio,v.garantia_dias AS dias
+                       FROM ventas v LEFT JOIN clientes c ON c.id=v.cliente_id WHERE v.id=%s""",(ref_id,))
+    x=cur.fetchone()
+    if not x:
+        con.close();return redirect("/garantias")
+
+    inicio=x.get("inicio")
+    dias=int(x.get("dias") or 0)
+    vence=(inicio+datetime.timedelta(days=dias)) if inicio and dias>0 else None
+    vigente=bool(vence and datetime.date.today()<=vence)
+
+    if request.method=="POST":
+        motivo=request.form.get("motivo","").strip()
+        observaciones=request.form.get("observaciones","").strip()
+        if not motivo:
+            con.close();flash("Describí el motivo del reclamo.","error");return redirect(f"/garantias/reclamo/nuevo?tipo={tipo}&id={ref_id}")
+        if tipo=="orden":
+            cur.execute("""INSERT INTO garantia_reclamos(tipo,orden_id,motivo,observaciones)
+                           VALUES('Reparación',%s,%s,%s) RETURNING id""",(ref_id,motivo,observaciones))
+        else:
+            cur.execute("""INSERT INTO garantia_reclamos(tipo,venta_id,motivo,observaciones)
+                           VALUES('Venta',%s,%s,%s) RETURNING id""",(ref_id,motivo,observaciones))
+        rid=cur.fetchone()["id"]
+        con.commit();con.close()
+        flash("Reclamo de garantía registrado.","success")
+        return redirect(f"/garantias/reclamo/{rid}")
+    con.close()
+
+    equipo=" ".join([str(x.get("tipo_equipo") or ""),str(x.get("marca") or ""),str(x.get("modelo") or "")]).strip()
+    return html_layout("Nuevo reclamo",card_html(f"""
+      <h2 style='margin-top:0'>🛡️ Nuevo reclamo de garantía</h2>
+      <div style='background:{'#f0fdf4' if vigente else '#fef2f2'};border:1px solid {'#86efac' if vigente else '#fecaca'};padding:14px;border-radius:12px;margin-bottom:15px'>
+        <b>{escape(str(x.get('referencia') or '-'))}</b> · {escape(str(x.get('nombre') or '-'))}<br>
+        {escape(equipo or '-')} {f"· IMEI {escape(str(x.get('imei')))}" if x.get('imei') else ''}<br>
+        Garantía: <b>{'Vigente' if vigente else 'Vencida'}</b>{f" · vence {vence.strftime('%d/%m/%Y')}" if vence else ''}
+      </div>
+      <form method='post'>
+        <input type='hidden' name='tipo' value='{tipo}'><input type='hidden' name='id' value='{ref_id}'>
+        <label><b>Motivo / falla informada</b></label><br>
+        <textarea name='motivo' rows='5' required placeholder='Qué problema informa el cliente...' style='width:100%;padding:10px;margin:7px 0 12px'></textarea>
+        <label>Observaciones al recibir</label><br>
+        <textarea name='observaciones' rows='3' placeholder='Estado del equipo, accesorios, sello, golpes, humedad, etc.' style='width:100%;padding:10px;margin:7px 0 12px'></textarea>
+        <button style='background:#7c3aed;color:white;border:0;padding:11px 15px;border-radius:9px;font-weight:bold'>Registrar reclamo</button>
+        <a href='/garantias' style='margin-left:10px'>Cancelar</a>
+      </form>
+    """))
+
+
+@app.route("/garantias/reclamo/<int:rid>",methods=["GET","POST"])
+def garantia_reclamo(rid):
+    if not session.get("login"):
+        return redirect("/login")
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT gr.*,
+                          COALESCE(o.numero_orden,v.numero_venta) AS referencia,
+                          COALESCE(o.comprobante_numero,v.comprobante_numero) AS factura,
+                          COALESCE(co.nombre,cv.nombre,'Consumidor final') AS cliente,
+                          COALESCE(o.tipo_equipo,'Venta') AS tipo_equipo,o.marca,o.modelo,o.imei
+                   FROM garantia_reclamos gr
+                   LEFT JOIN ordenes o ON o.id=gr.orden_id
+                   LEFT JOIN clientes co ON co.id=o.cliente_id
+                   LEFT JOIN ventas v ON v.id=gr.venta_id
+                   LEFT JOIN clientes cv ON cv.id=v.cliente_id
+                   WHERE gr.id=%s""",(rid,))
+    r=cur.fetchone()
+    if not r:
+        con.close();return redirect("/garantias/reclamos")
+
+    if request.method=="POST":
+        estado=request.form.get("estado","Abierto").strip()
+        if estado not in ("Abierto","En revisión","Aceptado","Rechazado","Cerrado"):
+            estado="Abierto"
+        diagnostico=request.form.get("diagnostico","").strip()
+        solucion=request.form.get("solucion","").strip()
+        observaciones=request.form.get("observaciones","").strip()
+        fecha_cierre=datetime.date.today() if estado=="Cerrado" else None
+        cur.execute("""UPDATE garantia_reclamos
+                       SET estado=%s,diagnostico=%s,solucion=%s,observaciones=%s,fecha_cierre=%s
+                       WHERE id=%s""",(estado,diagnostico,solucion,observaciones,fecha_cierre,rid))
+        con.commit();con.close();flash("Reclamo actualizado.","success")
+        return redirect(f"/garantias/reclamo/{rid}")
+    con.close()
+
+    estados=["Abierto","En revisión","Aceptado","Rechazado","Cerrado"]
+    opts="".join(f"<option {'selected' if r.get('estado')==e else ''}>{e}</option>" for e in estados)
+    equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip()
+    return html_layout("Reclamo de garantía",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>🛡️ Reclamo #{rid}</h2><p style='color:#64748b;margin:5px 0'>{escape(str(r.get('referencia') or '-'))} · {escape(str(r.get('cliente') or '-'))}</p></div>
+        <a href='/garantias/reclamos'>← Reclamos</a>
+      </div>
+      <div style='background:#f8fafc;padding:14px;border-radius:12px;margin:14px 0'>
+        <b>{escape(equipo or '-')}</b>{f" · IMEI {escape(str(r.get('imei')))}" if r.get('imei') else ''}<br>
+        <small>Ingresado: {escape(str(r.get('fecha_reclamo') or '-'))} · Factura: {escape(str(r.get('factura') or '-'))}</small>
+      </div>
+      <div style='background:#fff7ed;border:1px solid #fed7aa;padding:13px;border-radius:12px;margin-bottom:15px'><b>Motivo informado:</b><br>{escape(str(r.get('motivo') or '-'))}</div>
+      <form method='post'>
+        <label><b>Estado</b></label><br><select name='estado' style='padding:9px;margin:6px 0 12px'>{opts}</select><br>
+        <label><b>Diagnóstico de garantía</b></label><br><textarea name='diagnostico' rows='4' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('diagnostico') or ''))}</textarea>
+        <label><b>Solución / trabajo realizado</b></label><br><textarea name='solucion' rows='4' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('solucion') or ''))}</textarea>
+        <label>Observaciones</label><br><textarea name='observaciones' rows='3' style='width:100%;padding:9px;margin:6px 0 12px'>{escape(str(r.get('observaciones') or ''))}</textarea>
+        <button style='background:#7c3aed;color:white;border:0;padding:11px 15px;border-radius:9px;font-weight:bold'>Guardar seguimiento</button>
+      </form>
+    """))
+
+
+@app.get("/garantias/reclamos")
+def garantia_reclamos():
+    if not session.get("login"):
+        return redirect("/login")
+    estado=request.args.get("estado","abiertos").strip().lower()
+    q=request.args.get("q","").strip()
+    like=f"%{q}%"
+    con=db();cur=con.cursor()
+    cur.execute("""SELECT gr.*,
+                          COALESCE(o.numero_orden,v.numero_venta) AS referencia,
+                          COALESCE(o.comprobante_numero,v.comprobante_numero) AS factura,
+                          COALESCE(co.nombre,cv.nombre,'Consumidor final') AS cliente,
+                          COALESCE(o.tipo_equipo,'Venta') AS tipo_equipo,o.marca,o.modelo,o.imei
+                   FROM garantia_reclamos gr
+                   LEFT JOIN ordenes o ON o.id=gr.orden_id
+                   LEFT JOIN clientes co ON co.id=o.cliente_id
+                   LEFT JOIN ventas v ON v.id=gr.venta_id
+                   LEFT JOIN clientes cv ON cv.id=v.cliente_id
+                   WHERE (%s='' OR COALESCE(o.numero_orden,v.numero_venta,'') ILIKE %s OR COALESCE(o.comprobante_numero,v.comprobante_numero,'') ILIKE %s
+                          OR COALESCE(co.nombre,cv.nombre,'Consumidor final') ILIKE %s OR COALESCE(o.imei,'') ILIKE %s)
+                   ORDER BY CASE WHEN gr.estado='Cerrado' THEN 1 ELSE 0 END,gr.fecha_reclamo DESC,gr.id DESC""",
+                (q,like,like,like,like))
+    todos=cur.fetchall();con.close()
+    if estado=="abiertos": mostrar=[r for r in todos if r.get("estado")!="Cerrado"]
+    elif estado=="cerrados": mostrar=[r for r in todos if r.get("estado")=="Cerrado"]
+    else: mostrar=todos;estado="todos"
+    abiertos=sum(1 for r in todos if r.get("estado")!="Cerrado")
+    cerrados=sum(1 for r in todos if r.get("estado")=="Cerrado")
+
+    filas=""
+    for r in mostrar:
+        equipo=" ".join([str(r.get("tipo_equipo") or ""),str(r.get("marca") or ""),str(r.get("modelo") or "")]).strip()
+        filas+=f"""<tr>
+          <td>{escape(str(r.get('fecha_reclamo') or '-'))}</td>
+          <td><a href='/garantias/reclamo/{int(r['id'])}' style='font-weight:bold;color:#7c3aed'>#{int(r['id'])}</a></td>
+          <td><b>{escape(str(r.get('estado') or '-'))}</b></td>
+          <td>{escape(str(r.get('tipo') or '-'))}</td>
+          <td>{escape(str(r.get('referencia') or '-'))}<br><small>{escape(str(r.get('factura') or '-'))}</small></td>
+          <td>{escape(str(r.get('cliente') or '-'))}</td>
+          <td>{escape(equipo or '-')}<br><small>{('IMEI '+escape(str(r.get('imei')))) if r.get('imei') else ''}</small></td>
+          <td>{escape(str(r.get('motivo') or '-'))}</td>
+        </tr>"""
+
+    return html_layout("Reclamos de garantía",card_html(f"""
+      <div style='display:flex;justify-content:space-between;gap:10px;align-items:center;flex-wrap:wrap'>
+        <div><h2 style='margin:0'>📋 Reclamos de garantía</h2><p style='color:#64748b;margin:5px 0'>Seguimiento de ingresos por garantía.</p></div>
+        <div><a href='/garantias'>← Garantías</a> · <a href='/'>🏠 Inicio</a></div>
+      </div>
+      <form method='get' style='display:flex;gap:8px;flex-wrap:wrap;background:#f8fafc;padding:12px;border-radius:12px;margin:14px 0'>
+        <input type='hidden' name='estado' value='{estado}'>
+        <input name='q' value='{escape(q,quote=True)}' placeholder='Cliente, orden, IMEI o factura...' style='padding:9px;flex:1;min-width:280px'><button>Buscar</button>
+      </form>
+      <div style='display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px'>
+        <a href='/garantias/reclamos?estado=abiertos&q={quote(q)}' style='padding:8px 11px;text-decoration:none;border-radius:9px;background:{'#b91c1c' if estado=='abiertos' else '#f3f4f6'};color:{'white' if estado=='abiertos' else '#374151'};font-weight:bold'>Abiertos ({abiertos})</a>
+        <a href='/garantias/reclamos?estado=cerrados&q={quote(q)}' style='padding:8px 11px;text-decoration:none;border-radius:9px;background:{'#166534' if estado=='cerrados' else '#f3f4f6'};color:{'white' if estado=='cerrados' else '#374151'};font-weight:bold'>Cerrados ({cerrados})</a>
+        <a href='/garantias/reclamos?estado=todos&q={quote(q)}' style='padding:8px 11px;text-decoration:none;border-radius:9px;background:{'#475569' if estado=='todos' else '#f3f4f6'};color:{'white' if estado=='todos' else '#374151'};font-weight:bold'>Todos ({len(todos)})</a>
+      </div>
+      <div style='overflow-x:auto'><table style='width:100%;min-width:1150px'><tr style='background:#f5f3ff'><th>Fecha</th><th>ID</th><th>Estado</th><th>Origen</th><th>Referencia</th><th>Cliente</th><th>Equipo</th><th>Motivo</th></tr>{filas or "<tr><td colspan='8' style='padding:20px;text-align:center;color:#64748b'>No hay reclamos para mostrar.</td></tr>"}</table></div>
+      <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
+    """))
+
+
+@app.get("/garantias/historial")
+def garantia_historial():
+    if not session.get("login"):
+        return redirect("/login")
+    tipo=request.args.get("tipo","").strip().lower()
+    try: ref_id=int(request.args.get("id") or 0)
+    except Exception: ref_id=0
+    if tipo not in ("orden","venta") or ref_id<=0:
+        return redirect("/garantias")
+    con=db();cur=con.cursor()
+    if tipo=="orden":
+        cur.execute("SELECT numero_orden referencia FROM ordenes WHERE id=%s",(ref_id,));obj=cur.fetchone()
+        cur.execute("SELECT * FROM garantia_reclamos WHERE orden_id=%s ORDER BY fecha_reclamo DESC,id DESC",(ref_id,))
+    else:
+        cur.execute("SELECT numero_venta referencia FROM ventas WHERE id=%s",(ref_id,));obj=cur.fetchone()
+        cur.execute("SELECT * FROM garantia_reclamos WHERE venta_id=%s ORDER BY fecha_reclamo DESC,id DESC",(ref_id,))
+    reclamos=cur.fetchall();con.close()
+    if not obj:return redirect("/garantias")
+    filas="".join(f"""<tr><td>{escape(str(r.get('fecha_reclamo') or '-'))}</td><td><a href='/garantias/reclamo/{int(r['id'])}'>#{int(r['id'])}</a></td><td><b>{escape(str(r.get('estado') or '-'))}</b></td><td>{escape(str(r.get('motivo') or '-'))}</td><td>{escape(str(r.get('solucion') or '-'))}</td></tr>""" for r in reclamos)
+    return html_layout("Historial de garantía",card_html(f"""
+      <h2>🛡️ Historial — {escape(str(obj.get('referencia') or '-'))}</h2>
+      <p><a href='/garantias'>← Garantías</a></p>
+      <div style='overflow-x:auto'><table style='width:100%;min-width:750px'><tr><th>Fecha</th><th>Reclamo</th><th>Estado</th><th>Motivo</th><th>Solución</th></tr>{filas or "<tr><td colspan='5' style='padding:18px;text-align:center;color:#64748b'>Todavía no tiene reclamos de garantía.</td></tr>"}</table></div>
       <style>table th,table td{{padding:9px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top}}</style>
     """))
 
