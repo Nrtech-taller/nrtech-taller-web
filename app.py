@@ -6510,6 +6510,7 @@ def _pf_nav():
     <div class='pf-nav'>
       <a href='/personal'>📊 Inicio</a>
       <a href='/personal/movimiento/nuevo'>＋ Movimiento</a>
+      <a href='/personal/ingresos'>💰 Ingresos</a>
       <a href='/personal/proximos'>📅 Próximos pagos</a>
       <a href='/personal/configuracion'>⚙️ Configuración</a>
     </div>
@@ -6763,6 +6764,13 @@ def personal_inicio():
             proximos.append((due,c["concepto"],float(c["monto"] or 0),c["moneda"],c.get("categoria") or "Compromiso"))
     proximos=sorted(proximos,key=lambda x:x[0])[:5]
 
+    cur.execute("""
+      SELECT * FROM pf_ingresos_recurrentes
+      WHERE activo=TRUE
+      ORDER BY CASE clave WHEN 'ing_udelar_ref' THEN 1 WHEN 'ing_semm_ref' THEN 2 WHEN 'ing_nrtech_ref' THEN 3 ELSE 9 END, concepto
+    """)
+    ingresos_previstos_detalle=cur.fetchall()
+
     cur.execute("""SELECT COALESCE(SUM(monto),0) total FROM pf_ingresos_recurrentes
                    WHERE activo=TRUE AND moneda='UYU' AND clave='ing_nrtech_ref'
                      AND (fecha_inicio IS NULL OR fecha_inicio<=%s)
@@ -6796,6 +6804,14 @@ def personal_inicio():
           <strong style='color:{'#166534' if m.get('impacto_presupuesto')=='Ingreso' else '#b45309' if m.get('impacto_presupuesto')=='Gasto' else '#475569'}'>{_pf_money(m['monto'],m['moneda'])}</strong>
         </div>""" for m in ultimos_movimientos
     ) or "<div class='pf-empty'>Todavía no hay movimientos personales.</div>"
+
+    ingresos_previstos_html="".join(
+        f"""<div class='pf-next'>
+          <span><b>{escape(i['concepto'])}</b><small>{('Cobro estimado día '+str(i['dia_cobro'])) if i.get('dia_cobro') else 'Día de cobro a definir'}</small></span>
+          <span style='text-align:right'><strong style='color:#166534'>{_pf_money(i['monto'],i['moneda'])}</strong><br>
+            <a href='/personal/ingresos#ingreso-{i['id']}' style='font-size:10px;font-weight:800'>✏️ Editar</a></span>
+        </div>""" for i in ingresos_previstos_detalle
+    ) or "<div class='pf-empty'>Todavía no hay ingresos previstos cargados.</div>"
 
     return html_layout("Mis Finanzas · Proyecto Libertad",f"""
       {_pf_nav()}
@@ -6878,9 +6894,13 @@ def personal_inicio():
           <a href='/personal/movimiento/nuevo' style='display:inline-block;margin-top:10px;font-size:11px;font-weight:bold'>＋ Agregar movimiento</a>
         </div>
         <div class='pf-box'>
-          <h3>💡 Lectura rápida</h3>
-          <p style='font-size:12px;color:#64748b;margin-top:0'>La proyección compara compromisos futuros contra <b>ingresos recurrentes confirmados</b>. Los retiros de NR Tech se muestran aparte para medir cuánto depende hoy tu economía del taller.</p>
-          <a href='/personal/obligaciones#ingresos' style='font-size:11px;font-weight:bold'>Configurar ingresos previstos →</a>
+          <h3>💰 Ingresos previstos</h3>
+          <p style='font-size:11px;color:#64748b;margin-top:0'>Estos son los valores que usa la proyección del próximo mes. Podés entrar y corregirlos cuando cambie un sueldo o la referencia de NR Tech.</p>
+          {ingresos_previstos_html}
+          <div style='display:flex;justify-content:space-between;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap'>
+            <b style='font-size:12px'>Total previsto: {_pf_money(proj["UYU"]["ingresos"])}</b>
+            <a href='/personal/ingresos' style='font-size:11px;font-weight:bold'>Ver / editar ingresos →</a>
+          </div>
         </div>
       </div>
 
@@ -7407,6 +7427,114 @@ def personal_tarjetas():
     """)}""")
 
 
+@app.route("/personal/ingresos",methods=["GET","POST"])
+def personal_ingresos():
+    g=_pf_guard()
+    if g:return g
+    con=db();cur=con.cursor()
+    if request.method=="POST":
+        accion=(request.form.get("accion") or "actualizar").strip()
+        if accion=="nuevo":
+            concepto=(request.form.get("concepto") or "").strip()
+            moneda=(request.form.get("moneda") or "UYU").strip().upper()
+            obs=(request.form.get("observacion") or "").strip()
+            fi=request.form.get("fecha_inicio") or None
+            ff=request.form.get("fecha_fin") or None
+            try:monto=Decimal((request.form.get("monto") or "0").replace(",","."))
+            except Exception:monto=Decimal("0")
+            try:dia=int(request.form.get("dia_cobro") or 0) or None
+            except Exception:dia=None
+            if not concepto or monto<0 or moneda not in ("UYU","USD"):
+                con.close();flash("Revisá concepto, monto y moneda del ingreso.","error");return redirect("/personal/ingresos")
+            cur.execute("""INSERT INTO pf_ingresos_recurrentes(concepto,monto,moneda,dia_cobro,fecha_inicio,fecha_fin,activo,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,TRUE,%s)""",(concepto,monto,moneda,dia,fi,ff,obs))
+            con.commit();con.close();flash("Ingreso previsto agregado.","success");return redirect("/personal/ingresos")
+
+        try:iid=int(request.form.get("id") or 0)
+        except Exception:iid=0
+        if not iid:
+            con.close();flash("Ingreso no válido.","error");return redirect("/personal/ingresos")
+        if accion=="desactivar":
+            cur.execute("UPDATE pf_ingresos_recurrentes SET activo=FALSE WHERE id=%s",(iid,))
+            con.commit();con.close();flash("Ingreso quitado de la proyección.","success");return redirect("/personal/ingresos")
+
+        concepto=(request.form.get("concepto") or "").strip()
+        moneda=(request.form.get("moneda") or "UYU").strip().upper()
+        obs=(request.form.get("observacion") or "").strip()
+        fi=request.form.get("fecha_inicio") or None
+        ff=request.form.get("fecha_fin") or None
+        try:monto=Decimal((request.form.get("monto") or "0").replace(",","."))
+        except Exception:monto=Decimal("0")
+        try:dia=int(request.form.get("dia_cobro") or 0) or None
+        except Exception:dia=None
+        if not concepto or monto<0 or moneda not in ("UYU","USD"):
+            con.close();flash("Revisá concepto, monto y moneda del ingreso.","error");return redirect(f"/personal/ingresos#ingreso-{iid}")
+        cur.execute("""UPDATE pf_ingresos_recurrentes
+                       SET concepto=%s,monto=%s,moneda=%s,dia_cobro=%s,fecha_inicio=%s,fecha_fin=%s,observacion=%s
+                       WHERE id=%s""",(concepto,monto,moneda,dia,fi,ff,obs,iid))
+        con.commit();con.close();flash("Ingreso previsto actualizado.","success");return redirect(f"/personal/ingresos#ingreso-{iid}")
+
+    cur.execute("""SELECT * FROM pf_ingresos_recurrentes WHERE activo=TRUE
+                   ORDER BY CASE clave WHEN 'ing_udelar_ref' THEN 1 WHEN 'ing_semm_ref' THEN 2 WHEN 'ing_nrtech_ref' THEN 3 ELSE 9 END, concepto""")
+    ingresos=cur.fetchall()
+    totales={"UYU":0.0,"USD":0.0}
+    for i in ingresos:totales[i["moneda"]]=totales.get(i["moneda"],0)+float(i["monto"] or 0)
+    con.close()
+
+    cards=""
+    for i in ingresos:
+        fi=i['fecha_inicio'].isoformat() if i.get('fecha_inicio') else ''
+        ff=i['fecha_fin'].isoformat() if i.get('fecha_fin') else ''
+        cards+=f"""<div id='ingreso-{i['id']}' style='background:white;border:1px solid #dbe4ef;border-radius:16px;padding:15px;margin-bottom:10px;box-shadow:0 5px 16px rgba(15,23,42,.05)'>
+          <form method='post'>
+            <input type='hidden' name='accion' value='actualizar'><input type='hidden' name='id' value='{i['id']}'>
+            <div style='display:grid;grid-template-columns:2fr 1fr .7fr .8fr 1fr 1fr;gap:8px;align-items:end'>
+              <div><label>Ingreso</label><input name='concepto' value='{escape(i['concepto'])}' required style='width:100%;padding:9px'></div>
+              <div><label>Monto previsto</label><input name='monto' value='{Decimal(str(i['monto'] or 0)):.2f}' inputmode='decimal' required style='width:100%;padding:9px;font-weight:800'></div>
+              <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option {'selected' if i['moneda']=='UYU' else ''}>UYU</option><option {'selected' if i['moneda']=='USD' else ''}>USD</option></select></div>
+              <div><label>Día cobro</label><input type='number' min='1' max='31' name='dia_cobro' value='{i.get('dia_cobro') or ''}' style='width:100%;padding:9px'></div>
+              <div><label>Desde</label><input type='date' name='fecha_inicio' value='{fi}' style='width:100%;padding:9px'></div>
+              <div><label>Hasta</label><input type='date' name='fecha_fin' value='{ff}' style='width:100%;padding:9px'></div>
+            </div>
+            <input name='observacion' value='{escape(str(i.get('observacion') or ''))}' placeholder='Observación' style='width:100%;padding:9px;margin-top:8px'>
+            <div style='display:flex;gap:8px;margin-top:9px;flex-wrap:wrap'>
+              <button style='border:0;background:#16a34a;color:white;border-radius:8px;padding:9px 12px;font-weight:800'>💾 Guardar cambios</button>
+            </div>
+          </form>
+        </div>"""
+    if not cards:cards="<div style='padding:20px;text-align:center;color:#94a3b8'>No hay ingresos previstos activos.</div>"
+
+    return html_layout("Ingresos previstos · Mis Finanzas",f"""
+      {_pf_nav()}
+      {card_html(f"""
+        <div style='display:flex;justify-content:space-between;gap:12px;align-items:flex-start;flex-wrap:wrap'>
+          <div><h2 style='margin:0'>💰 Ingresos previstos</h2><p style='color:#64748b;margin:5px 0 0'>Editá acá lo que esperás cobrar. La proyección se recalcula inmediatamente con estos valores.</p></div>
+          <div style='background:#ecfdf5;border:1px solid #bbf7d0;border-radius:12px;padding:10px 14px'><small style='color:#64748b'>TOTAL UYU</small><div style='font-size:21px;font-weight:900;color:#166534'>{_pf_money(totales.get('UYU',0))}</div></div>
+        </div>
+      """)}
+      {cards}
+      {card_html("""
+        <details>
+          <summary style='cursor:pointer;font-weight:800'>＋ Agregar otro ingreso previsto</summary>
+          <form method='post' style='margin-top:12px'>
+            <input type='hidden' name='accion' value='nuevo'>
+            <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px;align-items:end'>
+              <div><label>Concepto</label><input name='concepto' required style='width:100%;padding:9px'></div>
+              <div><label>Monto</label><input name='monto' inputmode='decimal' required style='width:100%;padding:9px'></div>
+              <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
+              <div><label>Día cobro</label><input name='dia_cobro' type='number' min='1' max='31' style='width:100%;padding:9px'></div>
+              <div><label>Desde</label><input name='fecha_inicio' type='date' style='width:100%;padding:9px'></div>
+              <div><label>Hasta</label><input name='fecha_fin' type='date' style='width:100%;padding:9px'></div>
+            </div>
+            <input name='observacion' placeholder='Observación opcional' style='width:100%;padding:9px;margin-top:8px'>
+            <button style='margin-top:9px;border:0;background:#2563eb;color:white;border-radius:8px;padding:9px 12px;font-weight:800'>Agregar</button>
+          </form>
+        </details>
+      """)}
+      <style>@media(max-width:800px){{#ingreso-0 form>div{{grid-template-columns:1fr!important}}}}</style>
+    """)
+
+
 @app.route("/personal/obligaciones",methods=["GET","POST"])
 def personal_obligaciones():
     g=_pf_guard()
@@ -7503,9 +7631,10 @@ def personal_obligaciones():
         f"""<tr><td><b>{escape(i['concepto'])}</b></td><td>{_pf_money(i['monto'],i['moneda'])}</td>
         <td>{'Día '+str(i['dia_cobro']) if i.get('dia_cobro') else 'A definir'}</td>
         <td>{i['fecha_inicio'].strftime('%d/%m/%Y') if i.get('fecha_inicio') else '-'}</td>
-        <td>{i['fecha_fin'].strftime('%d/%m/%Y') if i.get('fecha_fin') else 'Sin fin'}</td></tr>"""
+        <td>{i['fecha_fin'].strftime('%d/%m/%Y') if i.get('fecha_fin') else 'Sin fin'}</td>
+        <td><a href='/personal/ingresos#ingreso-{i["id"]}' style='font-weight:800'>✏️ Editar</a></td></tr>"""
         for i in ingresos_rec
-    ) or "<tr><td colspan='5'>Todavía no cargamos ingresos recurrentes.</td></tr>"
+    ) or "<tr><td colspan='6'>Todavía no cargamos ingresos recurrentes.</td></tr>"
 
     return html_layout("Deudas y gastos fijos",f"""{_pf_nav()}{card_html(f"""
       <h2 style='margin-top:0'>📌 Deudas, cuotas y gastos fijos</h2>
@@ -7548,7 +7677,7 @@ def personal_obligaciones():
           <input name='observacion_ingreso' placeholder='Nota opcional' style='width:100%;padding:9px;margin-top:8px'>
           <button style='margin-top:9px;background:#16a34a;color:white;border:0;padding:10px 14px'>Agregar ingreso previsto</button>
         </form>
-        <div style='overflow-x:auto;margin-top:15px'><table><tr><th>Ingreso</th><th>Monto</th><th>Cobro</th><th>Desde</th><th>Hasta</th></tr>{ingresos_filas}</table></div>
+        <div style='overflow-x:auto;margin-top:15px'><table><tr><th>Ingreso</th><th>Monto</th><th>Cobro</th><th>Desde</th><th>Hasta</th><th></th></tr>{ingresos_filas}</table></div>
       """)}
     </div>""")
 
