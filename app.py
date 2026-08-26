@@ -760,6 +760,8 @@ CREATE TABLE IF NOT EXISTS clientes (
     """)
     # Compatibilidad con bases creadas antes de V16.1.
     cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS frecuencia_meses INTEGER NOT NULL DEFAULT 1;")
+    # V16.2: diferencia pagos manuales de retenciones directas de sueldo.
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS forma_pago TEXT NOT NULL DEFAULT 'Manual';")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pf_ingresos_recurrentes (
@@ -6622,6 +6624,16 @@ def personal_inicio():
     salidas={"UYU":0.0,"USD":0.0}
     for r in cur.fetchall():salidas[r["moneda"]]=float(r["total"] or 0)
 
+    # Retenciones de sueldo: son gasto real, pero no salen de una cuenta personal registrada.
+    cur.execute("""
+      SELECT moneda,COALESCE(SUM(monto),0) total
+      FROM pf_movimientos
+      WHERE fecha BETWEEN %s AND %s AND origen='Retención sueldo'
+      GROUP BY moneda
+    """,(inicio,fin))
+    retenciones={"UYU":0.0,"USD":0.0}
+    for r in cur.fetchall():retenciones[r["moneda"]]=float(r["total"] or 0)
+
     proj_actual=_pf_projection_month(cur,hoy.year,hoy.month)
     proj=_pf_projection_month(cur,proximo.year,proximo.month)
 
@@ -6754,7 +6766,7 @@ def personal_inicio():
       <div class='pf-grid'>
         <div class='pf-kpi'><small>REAL · Disponible hoy</small><div class='v'>{_pf_money(disponible.get("UYU",0))}</div></div>
         <div class='pf-kpi'><small>REAL · Ingresos del mes</small><div class='v' style='color:#166534'>{_pf_money(ingresos.get("UYU",0))}</div></div>
-        <div class='pf-kpi'><small>REAL · Gastado este mes</small><div class='v' style='color:#b45309'>{_pf_money(salidas.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Consumo registrado: {_pf_money(gastos.get("UYU",0))}</div></div>
+        <div class='pf-kpi'><small>REAL · Gastado este mes</small><div class='v' style='color:#b45309'>{_pf_money(salidas.get("UYU",0)+retenciones.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Desde cuentas: {_pf_money(salidas.get("UYU",0))} · Retenido del sueldo: {_pf_money(retenciones.get("UYU",0))}</div></div>
         <div class='pf-kpi'><small>PENDIENTE · Este mes</small><div class='v' style='color:#b91c1c'>{_pf_money(proj_actual["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Solo obligaciones todavía no pagadas.</div></div>
         <div class='pf-kpi'><small>PROYECTADO · Próximo mes</small><div class='v' style='color:#4338ca'>{_pf_money(proj["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Fijos + deudas + cuotas conocidas.</div></div>
         <div class='pf-kpi'><small>Deuda total confirmada</small><div class='v' style='color:#b91c1c'>{_pf_money(deuda.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Incluye deudas sin fecha; solo saldos confirmados.</div></div>
@@ -7188,6 +7200,9 @@ def personal_obligaciones():
         categoria=request.form.get("categoria","").strip()
         moneda=request.form.get("moneda","UYU").strip().upper()
         obs=request.form.get("observacion","").strip()
+        forma_pago=request.form.get("forma_pago","Manual").strip()
+        if forma_pago not in ("Manual","Retención sueldo"):
+            forma_pago="Manual"
         try:monto=Decimal((request.form.get("monto") or "0").replace(",","."))
         except Exception:monto=Decimal("0")
         try:saldo=Decimal((request.form.get("saldo_deuda") or "").replace(",",".")) if request.form.get("saldo_deuda") else None
@@ -7210,11 +7225,19 @@ def personal_obligaciones():
         if frecuencia>1 and tipo!="Deuda sin fecha" and not fi:
             con.close();flash("Para una obligación no mensual indicá la fecha de inicio del ciclo.","error");return redirect("/personal/obligaciones")
         cur.execute("""INSERT INTO pf_obligaciones(concepto,tipo,categoria,monto,moneda,dia_vencimiento,
-                       fecha_inicio,fecha_fin,cuotas_total,cuota_actual,saldo_deuda,frecuencia_meses,incluir_proyeccion,observacion)
-                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
-                    (concepto,tipo,categoria,monto,moneda,dia,fi,ff,ct,ca,saldo,frecuencia,incluir,obs))
+                       fecha_inicio,fecha_fin,cuotas_total,cuota_actual,saldo_deuda,frecuencia_meses,incluir_proyeccion,observacion,forma_pago)
+                       VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                    (concepto,tipo,categoria,monto,moneda,dia,fi,ff,ct,ca,saldo,frecuencia,incluir,obs,forma_pago))
         con.commit();flash("Obligación agregada.","success")
-    cur.execute("SELECT * FROM pf_obligaciones WHERE activa=TRUE ORDER BY tipo,concepto")
+    cur.execute("""
+      SELECT o.*,COALESCE(p.total_pagado,0) total_pagado,COALESCE(p.cantidad,0) pagos_count
+      FROM pf_obligaciones o
+      LEFT JOIN (
+        SELECT obligacion_id,SUM(monto) total_pagado,COUNT(*) cantidad
+        FROM pf_pagos_obligaciones GROUP BY obligacion_id
+      ) p ON p.obligacion_id=o.id
+      WHERE o.activa=TRUE ORDER BY o.tipo,o.concepto
+    """)
     obligaciones=cur.fetchall()
     cur.execute("SELECT * FROM pf_ingresos_recurrentes WHERE activo=TRUE ORDER BY concepto")
     ingresos_rec=cur.fetchall()
@@ -7224,10 +7247,12 @@ def personal_obligaciones():
         venc="Sin fecha" if o["tipo"]=="Deuda sin fecha" else (f"Día {o['dia_vencimiento']}" if o.get("dia_vencimiento") else "Día a definir")
         saldo=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "-"
         cuota=f"{o.get('cuota_actual') or '-'}/{o.get('cuotas_total') or '-'}" if o["tipo"]=="Cuota" else "-"
+        forma=escape(o.get("forma_pago") or "Manual")
+        pagado=_pf_money(o.get("total_pagado") or 0,o["moneda"])
         filas+=f"""<tr><td><b>{escape(o['concepto'])}</b><br><small>{escape(o['tipo'])}</small></td>
           <td>{_pf_money(o['monto'],o['moneda'])}</td><td>{escape(venc)}</td><td>{escape(_pf_frequency_label(o.get('frecuencia_meses')))}</td><td>{cuota}</td>
-          <td>{saldo}</td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
-    if not filas:filas="<tr><td colspan='7'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
+          <td>{saldo}</td><td>{forma}<br><small>Pagado registrado: {pagado}</small></td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
+    if not filas:filas="<tr><td colspan='8'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
     ingresos_filas="".join(
         f"""<tr><td><b>{escape(i['concepto'])}</b></td><td>{_pf_money(i['monto'],i['moneda'])}</td>
         <td>{'Día '+str(i['dia_cobro']) if i.get('dia_cobro') else 'A definir'}</td>
@@ -7247,6 +7272,7 @@ def personal_obligaciones():
           <div><label>Moneda</label><select name='moneda' style='width:100%;padding:9px'><option>UYU</option><option>USD</option></select></div>
           <div><label>Día vencimiento</label><input name='dia_vencimiento' type='number' min='1' max='31' style='width:100%;padding:9px'></div>
           <div><label>Frecuencia</label><select name='frecuencia_meses' style='width:100%;padding:9px'><option value='1'>Mensual</option><option value='2'>Bimestral</option><option value='3'>Trimestral</option><option value='6'>Semestral</option><option value='12'>Anual</option></select></div>
+          <div><label>Forma de pago</label><select name='forma_pago' style='width:100%;padding:9px'><option>Manual</option><option>Retención sueldo</option></select></div>
           <div><label>Saldo total deuda</label><input name='saldo_deuda' inputmode='decimal' placeholder='Solo si lo conocemos' style='width:100%;padding:9px'></div>
           <div><label>Cuotas total</label><input name='cuotas_total' type='number' min='1' style='width:100%;padding:9px'></div>
           <div><label>Cuota actual</label><input name='cuota_actual' type='number' min='1' style='width:100%;padding:9px'></div>
@@ -7257,7 +7283,7 @@ def personal_obligaciones():
         <textarea name='observacion' rows='2' placeholder='Nota opcional' style='width:100%;padding:9px;margin-top:8px'></textarea>
         <button style='margin-top:9px;background:#2563eb;color:white;border:0;padding:10px 14px'>Agregar</button>
       </form>
-      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Concepto</th><th>Monto</th><th>Vence</th><th>Frecuencia</th><th>Cuota</th><th>Saldo deuda</th><th>Proyecta</th></tr>{filas}</table></div>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Concepto</th><th>Monto</th><th>Vence</th><th>Frecuencia</th><th>Cuota</th><th>Saldo deuda</th><th>Pago</th><th>Proyecta</th></tr>{filas}</table></div>
     """)}
     <div id='ingresos' style='margin-top:12px'>
       {card_html(f"""
@@ -7347,12 +7373,23 @@ def personal_proximos():
             accion=""
         else:
             estado="<span style='color:#b45309;font-weight:800'>⏳ Pendiente</span>"
-            opts=_pf_account_options(cuentas,o["moneda"])
-            accion=f"""<form method='post' action='/personal/obligacion/{o['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
-              <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
-              <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
-              <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
-            </form>"""
+            monto_default=f"{Decimal(str(o['monto'] or 0)):.2f}"
+            if (o.get("forma_pago") or "Manual")=="Retención sueldo":
+                accion=f"""<form method='post' action='/personal/obligacion/{o['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+                  <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+                  <input type='hidden' name='modo_pago' value='Retención sueldo'>
+                  <input name='monto_pagado' inputmode='decimal' value='{monto_default}' required style='width:92px;padding:5px;font-size:10px'>
+                  <button style='border:0;background:#7c3aed;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Registrar retención</button>
+                </form>"""
+            else:
+                opts=_pf_account_options(cuentas,o["moneda"])
+                accion=f"""<form method='post' action='/personal/obligacion/{o['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+                  <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+                  <input type='hidden' name='modo_pago' value='Manual'>
+                  <input name='monto_pagado' inputmode='decimal' value='{monto_default}' required style='width:92px;padding:5px;font-size:10px'>
+                  <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+                  <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
+                </form>"""
         detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {escape(_pf_frequency_label(o.get('frecuencia_meses')))} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'])}</strong></div>"""
 
     for q in cuotas:
@@ -7374,13 +7411,21 @@ def personal_proximos():
     deudas_sf=""
     for o in sin_fecha:
         saldo_txt=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "Saldo a confirmar"
-        opts=_pf_account_options(cuentas,o["moneda"])
-        form=f"""<form method='post' action='/personal/deuda/{o['id']}/abonar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:6px'>
-          <input name='monto' inputmode='decimal' required placeholder='Monto del abono' style='width:105px;padding:5px;font-size:10px'>
-          <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
-          <button style='border:0;background:#334155;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>Registrar abono</button>
-        </form>"""
-        deudas_sf+=f"<div class='pf-next'><span>{escape(o['concepto'])}<small>Sin fecha de pago definida{form}</small></span><strong>{saldo_txt}</strong></div>"
+        if (o.get("forma_pago") or "Manual")=="Retención sueldo":
+            form=f"""<form method='post' action='/personal/deuda/{o['id']}/abonar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:6px'>
+              <input type='hidden' name='modo_pago' value='Retención sueldo'>
+              <input name='monto' inputmode='decimal' required placeholder='Retención real' style='width:105px;padding:5px;font-size:10px'>
+              <button style='border:0;background:#7c3aed;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>Registrar retención</button>
+            </form>"""
+        else:
+            opts=_pf_account_options(cuentas,o["moneda"])
+            form=f"""<form method='post' action='/personal/deuda/{o['id']}/abonar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:6px'>
+              <input type='hidden' name='modo_pago' value='Manual'>
+              <input name='monto' inputmode='decimal' required placeholder='Monto del abono' style='width:105px;padding:5px;font-size:10px'>
+              <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+              <button style='border:0;background:#334155;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>Registrar abono</button>
+            </form>"""
+        deudas_sf+=f"<div class='pf-next'><span>{escape(o['concepto'])}<small>Sin fecha de pago definida · {escape(o.get('forma_pago') or 'Manual')}{form}</small></span><strong>{saldo_txt}</strong></div>"
     if not deudas_sf:deudas_sf="<div style='color:#94a3b8;font-size:12px'>No hay deudas sin fecha cargadas.</div>"
 
     return html_layout("Próximos pagos",f"""
@@ -7522,41 +7567,60 @@ def personal_obligacion_pagar(oid):
         anio=hoy.year;mes=hoy.month
     periodo=datetime.date(anio,mes,1)
     cuenta_id=request.form.get("cuenta_id") or None
+    modo_pago=request.form.get("modo_pago") or None
     con=db();cur=con.cursor()
     cur.execute("SELECT * FROM pf_obligaciones WHERE id=%s AND activa=TRUE",(oid,))
     o=cur.fetchone()
     if not o:
         con.close();return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
-    cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
-    cuenta=cur.fetchone() if cuenta_id else None
-    if not cuenta or cuenta["moneda"]!=o["moneda"]:
-        con.close();flash("Elegí una cuenta activa de la misma moneda para registrar el pago real.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+    if modo_pago not in ("Manual","Retención sueldo"):
+        modo_pago=o.get("forma_pago") or "Manual"
+    try:
+        monto_pagado=Decimal((request.form.get("monto_pagado") or str(o["monto"] or 0)).replace(",",".")).quantize(Decimal("0.01"))
+    except Exception:
+        monto_pagado=Decimal("0")
+    if monto_pagado<=0:
+        con.close();flash("Ingresá un monto real válido.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+    cuenta=None
+    if modo_pago=="Manual":
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+        cuenta=cur.fetchone() if cuenta_id else None
+        if not cuenta or cuenta["moneda"]!=o["moneda"]:
+            con.close();flash("Elegí una cuenta activa de la misma moneda para registrar el pago real.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    else:
+        cuenta_id=None
+
     cur.execute("SELECT id FROM pf_pagos_obligaciones WHERE obligacion_id=%s AND periodo=%s",(oid,periodo))
     if cur.fetchone():
         con.close();flash("Ese período ya figura pagado.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+    medio="Retención de sueldo" if modo_pago=="Retención sueldo" else "Pago obligación"
+    origen="Retención sueldo" if modo_pago=="Retención sueldo" else "Pago obligación"
+    signo=0 if modo_pago=="Retención sueldo" else -1
     cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
                    medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id)
-                   VALUES(CURRENT_DATE,'Pago',%s,%s,%s,%s,%s,'Pago obligación','Gasto',-1,
-                          'Pago obligación','obligacion',%s) RETURNING id""",
-                (f"Pago · {o['concepto']}",o.get("categoria") or o["tipo"],o["monto"],o["moneda"],cuenta_id,oid))
+                   VALUES(CURRENT_DATE,%s,%s,%s,%s,%s,%s,%s,'Gasto',%s,%s,'obligacion',%s) RETURNING id""",
+                ("Retención" if modo_pago=="Retención sueldo" else "Pago",
+                 f"{medio} · {o['concepto']}",o.get("categoria") or o["tipo"],monto_pagado,o["moneda"],cuenta_id,medio,signo,origen,oid))
     mid=cur.fetchone()["id"]
-    cur.execute("""INSERT INTO pf_pagos_obligaciones(obligacion_id,periodo,monto,moneda,cuenta_id,movimiento_id)
-                   VALUES(%s,%s,%s,%s,%s,%s)""",(oid,periodo,o["monto"],o["moneda"],cuenta_id,mid))
+    cur.execute("""INSERT INTO pf_pagos_obligaciones(obligacion_id,periodo,monto,moneda,cuenta_id,movimiento_id,observacion)
+                   VALUES(%s,%s,%s,%s,%s,%s,%s)""",
+                (oid,periodo,monto_pagado,o["moneda"],cuenta_id,mid,"Retención de sueldo" if modo_pago=="Retención sueldo" else None))
 
-    # Si es un préstamo/cuota, avanzamos la cuota y reducimos el saldo solo cuando esos datos fueron confirmados.
+    # Cuotas/préstamos: avanza progreso y baja saldo usando el monto REAL registrado.
     if o["tipo"]=="Cuota":
         saldo_nuevo=None
         if o.get("saldo_deuda") is not None:
-            saldo_nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-Decimal(str(o["monto"])))
+            saldo_nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-monto_pagado)
         cuota_actual=o.get("cuota_actual")
         cuotas_total=o.get("cuotas_total")
         finalizada=False
         nueva_cuota=cuota_actual
         if cuota_actual is not None and cuotas_total is not None:
-            if int(cuota_actual)>=int(cuotas_total):
-                finalizada=True
-            else:
-                nueva_cuota=int(cuota_actual)+1
+            nueva_cuota=min(int(cuotas_total),int(cuota_actual)+1)
+            finalizada=nueva_cuota>=int(cuotas_total)
         if saldo_nuevo is not None and saldo_nuevo<=0:
             finalizada=True
         cur.execute("""UPDATE pf_obligaciones
@@ -7566,7 +7630,8 @@ def personal_obligacion_pagar(oid):
                        WHERE id=%s""",
                     (saldo_nuevo,nueva_cuota,finalizada,periodo,finalizada,oid))
 
-    con.commit();con.close();flash("Pago registrado y descontado de la cuenta.","success")
+    con.commit();con.close()
+    flash("Retención registrada." if modo_pago=="Retención sueldo" else "Pago registrado y descontado de la cuenta.","success")
     return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
 
 
@@ -7575,6 +7640,7 @@ def personal_deuda_abonar(oid):
     g=_pf_guard()
     if g:return g
     cuenta_id=request.form.get("cuenta_id") or None
+    modo_pago=request.form.get("modo_pago") or None
     try:monto=Decimal((request.form.get("monto") or "0").replace(",",".")).quantize(Decimal("0.01"))
     except Exception:monto=Decimal("0")
     con=db();cur=con.cursor()
@@ -7582,21 +7648,29 @@ def personal_deuda_abonar(oid):
     o=cur.fetchone()
     if not o or monto<=0:
         con.close();flash("Revisá la deuda y el monto del abono.","error");return redirect("/personal/proximos")
-    cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
-    cuenta=cur.fetchone() if cuenta_id else None
-    if not cuenta or cuenta["moneda"]!=o["moneda"]:
-        con.close();flash("Elegí una cuenta activa de la misma moneda.","error");return redirect("/personal/proximos")
+    if modo_pago not in ("Manual","Retención sueldo"):
+        modo_pago=o.get("forma_pago") or "Manual"
     if o.get("saldo_deuda") is not None and monto>Decimal(str(o["saldo_deuda"])):
         con.close();flash("El abono no puede superar el saldo confirmado de la deuda.","error");return redirect("/personal/proximos")
+
+    if modo_pago=="Manual":
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+        cuenta=cur.fetchone() if cuenta_id else None
+        if not cuenta or cuenta["moneda"]!=o["moneda"]:
+            con.close();flash("Elegí una cuenta activa de la misma moneda.","error");return redirect("/personal/proximos")
+        signo=-1; medio="Abono deuda"; tipo_mov="Pago"; origen="Abono deuda"
+    else:
+        cuenta_id=None; signo=0; medio="Retención de sueldo"; tipo_mov="Retención"; origen="Retención sueldo"
+
     cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,
                    medio_pago,impacto_presupuesto,signo_saldo,origen,referencia_tipo,referencia_id)
-                   VALUES(CURRENT_DATE,'Pago',%s,'Deudas',%s,%s,%s,'Abono deuda','Gasto',-1,
-                          'Abono deuda','deuda_sin_fecha',%s)""",
-                (f"Abono · {o['concepto']}",monto,o["moneda"],cuenta_id,oid))
+                   VALUES(CURRENT_DATE,%s,%s,'Deudas',%s,%s,%s,%s,'Gasto',%s,%s,'deuda_sin_fecha',%s)""",
+                (tipo_mov,f"{medio} · {o['concepto']}",monto,o["moneda"],cuenta_id,medio,signo,origen,oid))
     if o.get("saldo_deuda") is not None:
         nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-monto)
         cur.execute("UPDATE pf_obligaciones SET saldo_deuda=%s,activa=CASE WHEN %s<=0 THEN FALSE ELSE activa END WHERE id=%s",(nuevo,nuevo,oid))
-    con.commit();con.close();flash("Abono registrado. La deuda sin fecha no se proyecta como vencimiento mensual.","success")
+    con.commit();con.close()
+    flash("Retención registrada y saldo actualizado." if modo_pago=="Retención sueldo" else "Abono registrado. La deuda sin fecha no se proyecta como vencimiento mensual.","success")
     return redirect("/personal/proximos")
 
 
