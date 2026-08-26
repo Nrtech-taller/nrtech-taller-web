@@ -9,6 +9,7 @@ from email.message import EmailMessage
 from email.utils import formataddr
 import datetime
 import calendar
+import json
 from decimal import Decimal, ROUND_HALF_UP
 import secrets
 from html import escape
@@ -720,6 +721,9 @@ CREATE TABLE IF NOT EXISTS clientes (
     );
     """)
 
+    cur.execute("ALTER TABLE pf_cuentas ADD COLUMN IF NOT EXISTS clave TEXT;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_pf_cuentas_clave ON pf_cuentas(clave) WHERE clave IS NOT NULL;")
+
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pf_tarjetas (
         id SERIAL PRIMARY KEY,
@@ -734,8 +738,12 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha_alta TIMESTAMP DEFAULT NOW()
     );
     """)
-    # Compatibilidad con bases creadas por la V16.0 base.
+    # Compatibilidad con bases creadas por versiones anteriores.
     cur.execute("ALTER TABLE pf_tarjetas ADD COLUMN IF NOT EXISTS limite_credito NUMERIC;")
+    cur.execute("ALTER TABLE pf_tarjetas ADD COLUMN IF NOT EXISTS clave TEXT;")
+    cur.execute("ALTER TABLE pf_tarjetas ADD COLUMN IF NOT EXISTS saldo_actual NUMERIC;")
+    cur.execute("ALTER TABLE pf_tarjetas ADD COLUMN IF NOT EXISTS fecha_saldo DATE;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_pf_tarjetas_clave ON pf_tarjetas(clave) WHERE clave IS NOT NULL;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pf_obligaciones (
@@ -758,10 +766,14 @@ CREATE TABLE IF NOT EXISTS clientes (
         fecha_alta TIMESTAMP DEFAULT NOW()
     );
     """)
-    # Compatibilidad con bases creadas antes de V16.1.
+    # Compatibilidad con bases creadas antes de V16.3.
     cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS frecuencia_meses INTEGER NOT NULL DEFAULT 1;")
-    # V16.2: diferencia pagos manuales de retenciones directas de sueldo.
     cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS forma_pago TEXT NOT NULL DEFAULT 'Manual';")
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS clave TEXT;")
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS cuotas_pagadas INTEGER NOT NULL DEFAULT 0;")
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS fecha_saldo DATE;")
+    cur.execute("ALTER TABLE pf_obligaciones ADD COLUMN IF NOT EXISTS saldo_modo TEXT NOT NULL DEFAULT 'Automatico';")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_pf_obligaciones_clave ON pf_obligaciones(clave) WHERE clave IS NOT NULL;")
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS pf_ingresos_recurrentes (
@@ -775,6 +787,38 @@ CREATE TABLE IF NOT EXISTS clientes (
         activo BOOLEAN NOT NULL DEFAULT TRUE,
         observacion TEXT,
         fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("ALTER TABLE pf_ingresos_recurrentes ADD COLUMN IF NOT EXISTS clave TEXT;")
+    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_pf_ingresos_clave ON pf_ingresos_recurrentes(clave) WHERE clave IS NOT NULL;")
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_compromisos_mes (
+        id SERIAL PRIMARY KEY,
+        clave TEXT UNIQUE,
+        concepto TEXT NOT NULL,
+        categoria TEXT,
+        periodo DATE NOT NULL,
+        monto NUMERIC NOT NULL DEFAULT 0,
+        moneda TEXT NOT NULL DEFAULT 'UYU',
+        dia_vencimiento INTEGER,
+        forma_pago TEXT NOT NULL DEFAULT 'Manual',
+        estado TEXT NOT NULL DEFAULT 'Pendiente',
+        fecha_pago DATE,
+        cuenta_id INTEGER REFERENCES pf_cuentas(id),
+        movimiento_id INTEGER,
+        observacion TEXT,
+        fecha_alta TIMESTAMP DEFAULT NOW()
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS pf_importaciones (
+        id SERIAL PRIMARY KEY,
+        fecha TIMESTAMP DEFAULT NOW(),
+        nombre TEXT,
+        resumen TEXT
     );
     """)
 
@@ -6553,6 +6597,14 @@ def _pf_projection_month(cur, anio, mes):
 
     cur.execute("""
       SELECT moneda,COALESCE(SUM(monto),0) total
+      FROM pf_compromisos_mes
+      WHERE periodo=%s AND estado<>'Pagado'
+      GROUP BY moneda
+    """,(periodo,))
+    compromisos={r["moneda"]:float(r["total"] or 0) for r in cur.fetchall()}
+
+    cur.execute("""
+      SELECT moneda,COALESCE(SUM(monto),0) total
       FROM pf_ingresos_recurrentes
       WHERE activo=TRUE
         AND (fecha_inicio IS NULL OR fecha_inicio<=%s)
@@ -6563,11 +6615,12 @@ def _pf_projection_month(cur, anio, mes):
 
     out={}
     for moneda in ("UYU","USD"):
-        comprometido=obligaciones.get(moneda,0)+cuotas.get(moneda,0)
+        comprometido=obligaciones.get(moneda,0)+cuotas.get(moneda,0)+compromisos.get(moneda,0)
         previsto=ingresos.get(moneda,0)
         out[moneda]={
             "obligaciones":obligaciones.get(moneda,0),
             "cuotas":cuotas.get(moneda,0),
+            "compromisos":compromisos.get(moneda,0),
             "comprometido":comprometido,
             "ingresos":previsto,
             "resultado":previsto-comprometido
@@ -6698,7 +6751,25 @@ def personal_inicio():
     for q in cur.fetchall():
         proximos.append((q["fecha_vencimiento"],f'{q["descripcion"]} · {q["numero_cuota"]}/{q["cuotas_total"]}',
                          float(q["monto"] or 0),q["moneda"],"Tarjeta"))
+    cur.execute("""
+      SELECT concepto,monto,moneda,periodo,dia_vencimiento,categoria
+      FROM pf_compromisos_mes
+      WHERE estado<>'Pagado' AND periodo BETWEEN %s AND %s
+      ORDER BY periodo,dia_vencimiento NULLS LAST,concepto
+    """,(datetime.date(hoy.year,hoy.month,1),datetime.date(limite.year,limite.month,1)))
+    for c in cur.fetchall():
+        due=_pf_safe_date(c["periodo"].year,c["periodo"].month,c.get("dia_vencimiento") or 1)
+        if hoy<=due<=limite:
+            proximos.append((due,c["concepto"],float(c["monto"] or 0),c["moneda"],c.get("categoria") or "Compromiso"))
     proximos=sorted(proximos,key=lambda x:x[0])[:5]
+
+    cur.execute("""SELECT COALESCE(SUM(monto),0) total FROM pf_ingresos_recurrentes
+                   WHERE activo=TRUE AND moneda='UYU' AND clave='ing_nrtech_ref'
+                     AND (fecha_inicio IS NULL OR fecha_inicio<=%s)
+                     AND (fecha_fin IS NULL OR fecha_fin>=%s)""",(_pf_month_bounds(proximo.year,proximo.month)[1],proximo))
+    nrtech_ref=float((cur.fetchone() or {}).get("total") or 0)
+    nrtech_extra=max(0.0,-float(proj["UYU"]["resultado"]))
+    nrtech_total=nrtech_ref+nrtech_extra
     con.close()
 
     if proj["UYU"]["comprometido"]<=0:
@@ -6767,22 +6838,24 @@ def personal_inicio():
         <div class='pf-kpi'><small>REAL · Disponible hoy</small><div class='v'>{_pf_money(disponible.get("UYU",0))}</div></div>
         <div class='pf-kpi'><small>REAL · Ingresos del mes</small><div class='v' style='color:#166534'>{_pf_money(ingresos.get("UYU",0))}</div></div>
         <div class='pf-kpi'><small>REAL · Gastado este mes</small><div class='v' style='color:#b45309'>{_pf_money(salidas.get("UYU",0)+retenciones.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Desde cuentas: {_pf_money(salidas.get("UYU",0))} · Retenido del sueldo: {_pf_money(retenciones.get("UYU",0))}</div></div>
-        <div class='pf-kpi'><small>PENDIENTE · Este mes</small><div class='v' style='color:#b91c1c'>{_pf_money(proj_actual["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Solo obligaciones todavía no pagadas.</div></div>
-        <div class='pf-kpi'><small>PROYECTADO · Próximo mes</small><div class='v' style='color:#4338ca'>{_pf_money(proj["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Fijos + deudas + cuotas conocidas.</div></div>
+        <div class='pf-kpi'><small>PENDIENTE · Este mes</small><div class='v' style='color:#b91c1c'>{_pf_money(proj_actual["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Obligaciones, cuotas y cierres todavía pendientes.</div></div>
+        <div class='pf-kpi'><small>PROYECTADO · Próximo mes</small><div class='v' style='color:#4338ca'>{_pf_money(proj["UYU"]["comprometido"])}</div><div style='font-size:10px;color:#94a3b8'>Fijos + deudas + tarjetas/cierres conocidos.</div></div>
         <div class='pf-kpi'><small>Deuda total confirmada</small><div class='v' style='color:#b91c1c'>{_pf_money(deuda.get("UYU",0))}</div><div style='font-size:10px;color:#94a3b8'>Incluye deudas sin fecha; solo saldos confirmados.</div></div>
       </div>
 
       <div class='pf-two'>
         <div class='pf-box'>
           <h3>📅 Próximo mes · {proximo.strftime("%m/%Y")}</h3>
-          <div style='display:grid;grid-template-columns:repeat(3,1fr);gap:8px'>
+          <div style='display:grid;grid-template-columns:repeat(4,1fr);gap:8px'>
             <div><small style='color:#64748b'>Fijos/deudas</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["obligaciones"])}</div></div>
-            <div><small style='color:#64748b'>Cuotas tarjetas</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["cuotas"])}</div></div>
+            <div><small style='color:#64748b'>Cuotas compras</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["cuotas"])}</div></div>
+            <div><small style='color:#64748b'>Tarjetas/variables</small><div style='font-weight:900'>{_pf_money(proj["UYU"].get("compromisos",0))}</div></div>
             <div><small style='color:#64748b'>Total comprometido</small><div style='font-weight:900'>{_pf_money(proj["UYU"]["comprometido"])}</div></div>
           </div>
           <div style='margin-top:12px;background:#f8fafc;border-radius:11px;padding:11px'>
             <div style='font-size:11px;color:#64748b'>Ingresos previstos cargados: {_pf_money(proj["UYU"]["ingresos"])}</div>
             <div style='font-size:14px;font-weight:900;color:{sem_color};margin-top:3px'>{semaforo}</div>
+            <div style='margin-top:7px;font-size:11px;color:#475569'>NR Tech referencia: <b>{_pf_money(nrtech_ref)}</b> · Extra necesario sobre esa referencia: <b style='color:{"#b91c1c" if nrtech_extra>0 else "#166534"}'>{_pf_money(nrtech_extra)}</b>{f" · Total NR Tech necesario: {_pf_money(nrtech_total)}" if nrtech_extra>0 else ""}</div>
           </div>
           <div class='pf-actions'>
             <a href='/personal/movimiento/nuevo'>＋ Cargar gasto/ingreso</a>
@@ -6978,6 +7051,161 @@ def personal_movimiento_nuevo():
     """)
 
 
+
+def _pf_import_date(valor):
+    if not valor:
+        return None
+    if isinstance(valor, datetime.date):
+        return valor
+    return datetime.date.fromisoformat(str(valor)[:10])
+
+
+def _pf_import_decimal(valor, allow_none=True):
+    if valor is None or valor=="":
+        return None if allow_none else Decimal("0")
+    return Decimal(str(valor).replace(",",".")).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
+
+
+def _pf_import_confirmed_base(cur, data):
+    """Importador idempotente de la base personal.
+    Los valores viven en un JSON privado y no quedan hardcodeados en el .py/Git.
+    """
+    if not isinstance(data, dict):
+        raise ValueError("El archivo debe contener un objeto JSON.")
+    resumen={"cuentas":0,"tarjetas":0,"obligaciones":0,"ingresos":0,"compromisos":0}
+
+    cfg=data.get("config") or {}
+    if cfg:
+        fi=_pf_import_date(cfg.get("fecha_inicio")) or datetime.date(2026,8,25)
+        nota=(cfg.get("nota_corte") or "").strip() or None
+        cur.execute("""UPDATE pf_config SET fecha_inicio=%s,moneda_base=%s,nota_corte=COALESCE(%s,nota_corte) WHERE id=1""",
+                    (fi,(cfg.get("moneda_base") or "UYU").upper(),nota))
+
+    for x in data.get("cuentas") or []:
+        clave=(x.get("clave") or "").strip() or None
+        nombre=(x.get("nombre") or "").strip()
+        moneda=(x.get("moneda") or "UYU").upper()
+        if not nombre or moneda not in ("UYU","USD"): continue
+        cur.execute("SELECT id FROM pf_cuentas WHERE clave=%s",(clave,)) if clave else cur.execute(
+            "SELECT id FROM pf_cuentas WHERE clave IS NULL AND nombre=%s AND moneda=%s ORDER BY id LIMIT 1",(nombre,moneda))
+        r=cur.fetchone()
+        vals=(clave,nombre,(x.get("tipo") or "Cuenta"),moneda,_pf_import_decimal(x.get("saldo_inicial"),False),True,x.get("observacion"))
+        if r:
+            cur.execute("""UPDATE pf_cuentas SET clave=%s,nombre=%s,tipo=%s,moneda=%s,saldo_inicial=%s,activa=%s,observacion=%s WHERE id=%s""",vals+(r["id"],))
+        else:
+            cur.execute("""INSERT INTO pf_cuentas(clave,nombre,tipo,moneda,saldo_inicial,activa,observacion) VALUES(%s,%s,%s,%s,%s,%s,%s)""",vals)
+        resumen["cuentas"]+=1
+
+    for x in data.get("tarjetas") or []:
+        clave=(x.get("clave") or "").strip() or None
+        nombre=(x.get("nombre") or "").strip(); moneda=(x.get("moneda") or "UYU").upper()
+        if not nombre or moneda not in ("UYU","USD"): continue
+        cur.execute("SELECT id FROM pf_tarjetas WHERE clave=%s",(clave,)) if clave else cur.execute(
+            "SELECT id FROM pf_tarjetas WHERE clave IS NULL AND nombre=%s AND moneda=%s ORDER BY id LIMIT 1",(nombre,moneda))
+        r=cur.fetchone()
+        vals=(clave,nombre,x.get("banco"),moneda,x.get("dia_cierre"),x.get("dia_vencimiento"),
+              _pf_import_decimal(x.get("limite_credito")),_pf_import_decimal(x.get("saldo_actual")),
+              _pf_import_date(x.get("fecha_saldo")),True,x.get("observacion"))
+        if r:
+            cur.execute("""UPDATE pf_tarjetas SET clave=%s,nombre=%s,banco=%s,moneda=%s,dia_cierre=%s,dia_vencimiento=%s,
+                           limite_credito=%s,saldo_actual=%s,fecha_saldo=%s,activa=%s,observacion=%s WHERE id=%s""",vals+(r["id"],))
+        else:
+            cur.execute("""INSERT INTO pf_tarjetas(clave,nombre,banco,moneda,dia_cierre,dia_vencimiento,limite_credito,saldo_actual,fecha_saldo,activa,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",vals)
+        resumen["tarjetas"]+=1
+
+    for x in data.get("obligaciones") or []:
+        clave=(x.get("clave") or "").strip() or None
+        concepto=(x.get("concepto") or "").strip(); moneda=(x.get("moneda") or "UYU").upper(); tipo=(x.get("tipo") or "Fijo")
+        if not concepto or moneda not in ("UYU","USD") or tipo not in ("Fijo","Cuota","Deuda sin fecha"): continue
+        cur.execute("SELECT id FROM pf_obligaciones WHERE clave=%s",(clave,)) if clave else cur.execute(
+            "SELECT id FROM pf_obligaciones WHERE clave IS NULL AND concepto=%s AND moneda=%s AND activa=TRUE ORDER BY id LIMIT 1",(concepto,moneda))
+        r=cur.fetchone()
+        pagadas=int(x.get("cuotas_pagadas") or 0)
+        total=int(x.get("cuotas_total") or 0) or None
+        cuota_actual=int(x.get("cuota_actual") or 0) or ((pagadas+1) if total and pagadas<total else None)
+        incluir=bool(x.get("incluir_proyeccion", tipo!="Deuda sin fecha")) and tipo!="Deuda sin fecha"
+        vals=(clave,concepto,tipo,x.get("categoria"),_pf_import_decimal(x.get("monto"),False),moneda,x.get("dia_vencimiento"),
+              _pf_import_date(x.get("fecha_inicio")),_pf_import_date(x.get("fecha_fin")),total,cuota_actual,pagadas,
+              _pf_import_decimal(x.get("saldo_deuda")),_pf_import_date(x.get("fecha_saldo")),(x.get("saldo_modo") or "Automatico"),int(x.get("frecuencia_meses") or 1),
+              incluir,bool(x.get("activa",True)),x.get("observacion"),(x.get("forma_pago") or "Manual"))
+        if r:
+            cur.execute("""UPDATE pf_obligaciones SET clave=%s,concepto=%s,tipo=%s,categoria=%s,monto=%s,moneda=%s,dia_vencimiento=%s,
+                           fecha_inicio=%s,fecha_fin=%s,cuotas_total=%s,cuota_actual=%s,cuotas_pagadas=%s,saldo_deuda=%s,fecha_saldo=%s,saldo_modo=%s,
+                           frecuencia_meses=%s,incluir_proyeccion=%s,activa=%s,observacion=%s,forma_pago=%s WHERE id=%s""",vals+(r["id"],))
+        else:
+            cur.execute("""INSERT INTO pf_obligaciones(clave,concepto,tipo,categoria,monto,moneda,dia_vencimiento,fecha_inicio,fecha_fin,
+                           cuotas_total,cuota_actual,cuotas_pagadas,saldo_deuda,fecha_saldo,saldo_modo,frecuencia_meses,incluir_proyeccion,activa,observacion,forma_pago)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",vals)
+        resumen["obligaciones"]+=1
+
+    for x in data.get("ingresos") or []:
+        clave=(x.get("clave") or "").strip() or None
+        concepto=(x.get("concepto") or "").strip(); moneda=(x.get("moneda") or "UYU").upper()
+        if not concepto or moneda not in ("UYU","USD"): continue
+        cur.execute("SELECT id FROM pf_ingresos_recurrentes WHERE clave=%s",(clave,)) if clave else cur.execute(
+            "SELECT id FROM pf_ingresos_recurrentes WHERE clave IS NULL AND concepto=%s AND moneda=%s AND activo=TRUE ORDER BY id LIMIT 1",(concepto,moneda))
+        r=cur.fetchone()
+        vals=(clave,concepto,_pf_import_decimal(x.get("monto"),False),moneda,x.get("dia_cobro"),_pf_import_date(x.get("fecha_inicio")),
+              _pf_import_date(x.get("fecha_fin")),bool(x.get("activo",True)),x.get("observacion"))
+        if r:
+            cur.execute("""UPDATE pf_ingresos_recurrentes SET clave=%s,concepto=%s,monto=%s,moneda=%s,dia_cobro=%s,fecha_inicio=%s,
+                           fecha_fin=%s,activo=%s,observacion=%s WHERE id=%s""",vals+(r["id"],))
+        else:
+            cur.execute("""INSERT INTO pf_ingresos_recurrentes(clave,concepto,monto,moneda,dia_cobro,fecha_inicio,fecha_fin,activo,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s)""",vals)
+        resumen["ingresos"]+=1
+
+    for x in data.get("compromisos") or []:
+        clave=(x.get("clave") or "").strip() or None
+        concepto=(x.get("concepto") or "").strip(); moneda=(x.get("moneda") or "UYU").upper(); periodo=_pf_import_date(x.get("periodo"))
+        if not concepto or not periodo or moneda not in ("UYU","USD"): continue
+        periodo=datetime.date(periodo.year,periodo.month,1)
+        cur.execute("SELECT id,estado FROM pf_compromisos_mes WHERE clave=%s",(clave,)) if clave else cur.execute(
+            "SELECT id,estado FROM pf_compromisos_mes WHERE clave IS NULL AND concepto=%s AND periodo=%s AND moneda=%s ORDER BY id LIMIT 1",(concepto,periodo,moneda))
+        r=cur.fetchone()
+        estado=(x.get("estado") or (r.get("estado") if r else None) or "Pendiente")
+        vals=(clave,concepto,x.get("categoria"),periodo,_pf_import_decimal(x.get("monto"),False),moneda,x.get("dia_vencimiento"),
+              (x.get("forma_pago") or "Manual"),estado,x.get("observacion"))
+        if r:
+            # No pisa un pago ya marcado salvo que el JSON lo pida expresamente.
+            cur.execute("""UPDATE pf_compromisos_mes SET clave=%s,concepto=%s,categoria=%s,periodo=%s,monto=%s,moneda=%s,dia_vencimiento=%s,
+                           forma_pago=%s,estado=CASE WHEN estado='Pagado' AND %s='Pendiente' THEN estado ELSE %s END,observacion=%s WHERE id=%s""",
+                        vals[:8]+(estado,estado,vals[9],r["id"]))
+        else:
+            cur.execute("""INSERT INTO pf_compromisos_mes(clave,concepto,categoria,periodo,monto,moneda,dia_vencimiento,forma_pago,estado,observacion)
+                           VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",vals)
+        resumen["compromisos"]+=1
+    return resumen
+
+
+@app.post("/personal/importar-base")
+def personal_importar_base():
+    g=_pf_guard()
+    if g:return g
+    archivo=request.files.get("archivo")
+    if not archivo or not archivo.filename:
+        flash("Elegí el archivo JSON de la base personal.","error")
+        return redirect("/personal/configuracion")
+    try:
+        raw=archivo.read()
+        if len(raw)>2_000_000:
+            raise ValueError("El archivo es demasiado grande.")
+        data=json.loads(raw.decode("utf-8-sig"))
+        con=db();cur=con.cursor()
+        resumen=_pf_import_confirmed_base(cur,data)
+        cur.execute("INSERT INTO pf_importaciones(nombre,resumen) VALUES(%s,%s)",(archivo.filename,json.dumps(resumen,ensure_ascii=False)))
+        con.commit();con.close()
+        flash("Base personal importada/actualizada: "+", ".join(f"{k} {v}" for k,v in resumen.items())+".","success")
+    except Exception as e:
+        try:
+            con.rollback();con.close()
+        except Exception:
+            pass
+        flash(f"No se pudo importar la base: {e}","error")
+    return redirect("/personal/configuracion")
+
+
 @app.get("/personal/configuracion")
 def personal_configuracion():
     g=_pf_guard()
@@ -6993,6 +7221,14 @@ def personal_configuracion():
       {card_html(f"""
         <h2 style='margin-top:0'>⚙️ Configuración personal</h2>
         <p style='color:#64748b'>Acá configurás una sola vez las bases que alimentan el dashboard y la proyección. Nada de esto se mezcla con DGI ni con la caja comercial.</p>
+        <div style='background:#eef2ff;border:1px solid #c7d2fe;border-radius:14px;padding:12px;margin:10px 0 14px'>
+          <b>📥 Importar base personal confirmada</b>
+          <p style='font-size:11px;color:#64748b;margin:5px 0 9px'>El archivo JSON es privado: se importa a PostgreSQL y no necesita subirse a GitHub. Podés volver a importarlo; actualiza los mismos registros sin duplicarlos.</p>
+          <form method='post' action='/personal/importar-base' enctype='multipart/form-data' style='display:flex;gap:8px;align-items:center;flex-wrap:wrap'>
+            <input type='file' name='archivo' accept='.json,application/json' required>
+            <button style='background:#4f46e5;color:white;border:0;border-radius:9px;padding:9px 12px;font-weight:bold'>Importar / actualizar</button>
+          </form>
+        </div>
         <div style='display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px'>
           <a href='/personal/cuentas' style='text-decoration:none;color:inherit;background:#f8fafc;border:1px solid #dbe4ef;border-radius:14px;padding:14px'>
             <div style='font-size:22px'>🏦</div><b>Cuentas y efectivo</b><div style='font-size:11px;color:#64748b;margin-top:5px'>{nc} activa/s</div>
@@ -7152,8 +7388,9 @@ def personal_tarjetas():
     filas="".join(f"""<tr><td><b>{escape(t['nombre'])}</b><br><small>{escape(str(t.get('banco') or ''))}</small></td>
       <td>{t['moneda']}</td><td>{t['dia_cierre']}</td><td>{t['dia_vencimiento']}</td>
       <td>{_pf_money(t['limite_credito'],t['moneda']) if t.get('limite_credito') is not None else '-'}</td>
+      <td>{_pf_money(t['saldo_actual'],t['moneda'],2) if t.get('saldo_actual') is not None else '-'}<br><small>{t['fecha_saldo'].strftime('%d/%m/%Y') if t.get('fecha_saldo') else ''}</small></td>
       <td><b>{_pf_money(t['actual'],t['moneda'])}</b></td><td><b>{_pf_money(t['siguiente'],t['moneda'])}</b></td>
-      <td>{_pf_money(t['futuro'],t['moneda'])}</td></tr>""" for t in tarjetas) or "<tr><td colspan='8'>Todavía no cargamos tarjetas.</td></tr>"
+      <td>{_pf_money(t['futuro'],t['moneda'])}</td></tr>""" for t in tarjetas) or "<tr><td colspan='9'>Todavía no cargamos tarjetas.</td></tr>"
     return html_layout("Tarjetas personales",f"""{_pf_nav()}{card_html(f"""
       <h2 style='margin-top:0'>💳 Tarjetas</h2>
       <p style='color:#64748b'>El cierre y vencimiento determinan automáticamente cuándo aparece cada cuota. No cargamos fechas inventadas.</p>
@@ -7166,7 +7403,7 @@ def personal_tarjetas():
         <div><label>Límite (opcional)</label><input name='limite_credito' inputmode='decimal' style='width:100%;padding:9px'></div>
         <button style='background:#4f46e5;color:white;border:0;padding:10px'>Agregar</button>
       </form>
-      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Tarjeta</th><th>Moneda</th><th>Cierre</th><th>Vence</th><th>Límite</th><th>Este mes</th><th>Próximo mes</th><th>Futuro pendiente</th></tr>{filas}</table></div>
+      <div style='overflow-x:auto;margin-top:16px'><table><tr><th>Tarjeta</th><th>Moneda</th><th>Cierre</th><th>Vence</th><th>Límite</th><th>Saldo informado</th><th>Este mes</th><th>Próximo mes</th><th>Futuro pendiente</th></tr>{filas}</table></div>
     """)}""")
 
 
@@ -7246,12 +7483,21 @@ def personal_obligaciones():
     for o in obligaciones:
         venc="Sin fecha" if o["tipo"]=="Deuda sin fecha" else (f"Día {o['dia_vencimiento']}" if o.get("dia_vencimiento") else "Día a definir")
         saldo=_pf_money(o["saldo_deuda"],o["moneda"]) if o.get("saldo_deuda") is not None else "-"
-        cuota=f"{o.get('cuota_actual') or '-'}/{o.get('cuotas_total') or '-'}" if o["tipo"]=="Cuota" else "-"
+        pagadas=int(o.get("cuotas_pagadas") or 0)
+        total=int(o.get("cuotas_total") or 0)
+        if o["tipo"]=="Cuota" and total:
+            restantes=max(0,total-pagadas)
+            restante_cuotas=Decimal(str(o["monto"] or 0))*restantes
+            cuota=f"<b>{pagadas}/{total} pagadas</b><br><small>{restantes} pendientes · {_pf_money(restante_cuotas,o['moneda'],2)}</small>"
+        elif o["tipo"]=="Cuota":
+            cuota=f"<b>{pagadas} pago/s registrado/s</b>" if pagadas else "Variable"
+        else:
+            cuota="-"
         forma=escape(o.get("forma_pago") or "Manual")
         pagado=_pf_money(o.get("total_pagado") or 0,o["moneda"])
         filas+=f"""<tr><td><b>{escape(o['concepto'])}</b><br><small>{escape(o['tipo'])}</small></td>
-          <td>{_pf_money(o['monto'],o['moneda'])}</td><td>{escape(venc)}</td><td>{escape(_pf_frequency_label(o.get('frecuencia_meses')))}</td><td>{cuota}</td>
-          <td>{saldo}</td><td>{forma}<br><small>Pagado registrado: {pagado}</small></td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
+          <td>{_pf_money(o['monto'],o['moneda'],2)}</td><td>{escape(venc)}</td><td>{escape(_pf_frequency_label(o.get('frecuencia_meses')))}</td><td>{cuota}</td>
+          <td>{saldo}</td><td>{forma}<br><small>Pagado desde el sistema: {pagado}</small></td><td>{"Sí" if o["incluir_proyeccion"] else "No"}</td></tr>"""
     if not filas:filas="<tr><td colspan='8'>Todavía no cargamos gastos fijos ni deudas.</td></tr>"
     ingresos_filas="".join(
         f"""<tr><td><b>{escape(i['concepto'])}</b></td><td>{_pf_money(i['monto'],i['moneda'])}</td>
@@ -7349,6 +7595,8 @@ def personal_proximos():
       ORDER BY c.fecha_vencimiento
     """,(inicio,fin))
     cuotas=cur.fetchall()
+    cur.execute("""SELECT * FROM pf_compromisos_mes WHERE periodo=%s ORDER BY dia_vencimiento NULLS LAST,concepto""",(inicio,))
+    compromisos_mes=cur.fetchall()
     cur.execute("SELECT * FROM pf_obligaciones WHERE activa=TRUE AND tipo='Deuda sin fecha' ORDER BY concepto")
     sin_fecha=cur.fetchall()
     con.close()
@@ -7390,7 +7638,14 @@ def personal_proximos():
                   <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
                   <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
                 </form>"""
-        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {escape(_pf_frequency_label(o.get('frecuencia_meses')))} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'])}</strong></div>"""
+        progreso=""
+        if o.get("tipo")=="Cuota" and o.get("cuotas_total"):
+            pagadas=int(o.get("cuotas_pagadas") or 0); total=int(o.get("cuotas_total") or 0); restantes=max(0,total-pagadas)
+            restante_val=Decimal(str(o["monto"] or 0))*restantes
+            progreso=f" · {pagadas}/{total} pagadas · quedan {restantes} ({_pf_money(restante_val,o['moneda'],2)})"
+        elif o.get("tipo")=="Cuota" and o.get("saldo_deuda") is not None:
+            progreso=f" · saldo ref. {_pf_money(o['saldo_deuda'],o['moneda'],2)}"
+        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(o['concepto'])}<small>{escape(o['tipo'])} · {escape(_pf_frequency_label(o.get('frecuencia_meses')))}{progreso} · {estado}{accion}</small></span><strong>{_pf_money(o['monto'],o['moneda'],2)}</strong></div>"""
 
     for q in cuotas:
         pagada=q.get("estado")=="Pagada"
@@ -7406,6 +7661,32 @@ def personal_proximos():
               <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
             </form>"""
         detalle+=f"""<div class='pf-next'><span><b>{q['fecha_vencimiento'].strftime('%d/%m')}</b> · {escape(q['descripcion'])}<small>{escape(q['tarjeta'])} · cuota {q['numero_cuota']}/{q['cuotas_total']} · {estado}{accion}</small></span><strong>{_pf_money(q['monto'],q['moneda'])}</strong></div>"""
+
+    for c in compromisos_mes:
+        due=_pf_safe_date(base.year,base.month,c.get("dia_vencimiento") or 1)
+        pagada=c.get("estado")=="Pagado"
+        if pagada:
+            estado=f"<span style='color:#166534;font-weight:800'>✅ Pagado {c['fecha_pago'].strftime('%d/%m') if c.get('fecha_pago') else ''}</span>"
+            accion=""
+        else:
+            estado="<span style='color:#b45309;font-weight:800'>⏳ Pendiente</span>"
+            if (c.get("forma_pago") or "Manual")=="Retención sueldo":
+                accion=f"""<form method='post' action='/personal/compromiso/{c['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+                  <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+                  <input type='hidden' name='modo_pago' value='Retención sueldo'>
+                  <input name='monto_pagado' inputmode='decimal' value='{Decimal(str(c['monto'] or 0)):.2f}' required style='width:92px;padding:5px;font-size:10px'>
+                  <button style='border:0;background:#7c3aed;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Registrar retención</button>
+                </form>"""
+            else:
+                opts=_pf_account_options(cuentas,c["moneda"])
+                accion=f"""<form method='post' action='/personal/compromiso/{c['id']}/pagar' style='display:flex;gap:5px;align-items:center;flex-wrap:wrap;margin-top:5px'>
+                  <input type='hidden' name='anio' value='{base.year}'><input type='hidden' name='mes' value='{base.month}'>
+                  <input type='hidden' name='modo_pago' value='Manual'>
+                  <input name='monto_pagado' inputmode='decimal' value='{Decimal(str(c['monto'] or 0)):.2f}' required style='width:92px;padding:5px;font-size:10px'>
+                  <select name='cuenta_id' required style='padding:5px;font-size:10px'>{opts}</select>
+                  <button style='border:0;background:#16a34a;color:white;border-radius:7px;padding:6px 8px;font-size:10px;font-weight:bold'>✅ Pagar</button>
+                </form>"""
+        detalle+=f"""<div class='pf-next'><span><b>{due.strftime('%d/%m')}</b> · {escape(c['concepto'])}<small>{escape(c.get('categoria') or 'Tarjeta/variable')} · {estado}{accion}</small></span><strong>{_pf_money(c['monto'],c['moneda'],2)}</strong></div>"""
 
     if not detalle:detalle="<div style='padding:18px;color:#94a3b8;text-align:center'>Sin pagos cargados para este mes.</div>"
     deudas_sf=""
@@ -7526,6 +7807,49 @@ def personal_nrtech():
     """)}""")
 
 
+@app.post("/personal/compromiso/<int:cid>/pagar")
+def personal_compromiso_pagar(cid):
+    g=_pf_guard()
+    if g:return g
+    hoy=datetime.date.today()
+    try:
+        anio=int(request.form.get("anio") or hoy.year); mes=int(request.form.get("mes") or hoy.month)
+    except Exception:
+        anio=hoy.year; mes=hoy.month
+    cuenta_id=request.form.get("cuenta_id") or None
+    modo_pago=request.form.get("modo_pago") or "Manual"
+    con=db();cur=con.cursor()
+    cur.execute("SELECT * FROM pf_compromisos_mes WHERE id=%s",(cid,))
+    c=cur.fetchone()
+    if not c or c.get("estado")=="Pagado":
+        con.close();return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    try:
+        monto=Decimal((request.form.get("monto_pagado") or str(c["monto"] or 0)).replace(",",".")).quantize(Decimal("0.01"))
+    except Exception:
+        monto=Decimal("0")
+    if monto<=0:
+        con.close();flash("Ingresá un monto real válido.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+    if modo_pago not in ("Manual","Retención sueldo"):
+        modo_pago=c.get("forma_pago") or "Manual"
+    if modo_pago=="Manual":
+        cur.execute("SELECT * FROM pf_cuentas WHERE id=%s AND activa=TRUE",(cuenta_id,))
+        cuenta=cur.fetchone() if cuenta_id else None
+        if not cuenta or cuenta["moneda"]!=c["moneda"]:
+            con.close();flash("Elegí una cuenta activa de la misma moneda.","error");return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+        signo=-1; origen="Pago compromiso"; tipo_mov="Pago"; medio="Pago tarjeta/compromiso"
+    else:
+        cuenta_id=None; signo=0; origen="Retención sueldo"; tipo_mov="Retención"; medio="Retención de sueldo"
+    cur.execute("""INSERT INTO pf_movimientos(fecha,tipo,descripcion,categoria,monto,moneda,cuenta_id,medio_pago,impacto_presupuesto,
+                   signo_saldo,origen,referencia_tipo,referencia_id)
+                   VALUES(CURRENT_DATE,%s,%s,%s,%s,%s,%s,%s,'Gasto',%s,%s,'compromiso_mes',%s) RETURNING id""",
+                (tipo_mov,f"{medio} · {c['concepto']}",c.get("categoria") or "Tarjeta",monto,c["moneda"],cuenta_id,medio,signo,origen,cid))
+    mid=cur.fetchone()["id"]
+    cur.execute("""UPDATE pf_compromisos_mes SET estado='Pagado',fecha_pago=CURRENT_DATE,cuenta_id=%s,movimiento_id=%s,monto=%s WHERE id=%s""",
+                (cuenta_id,mid,monto,cid))
+    con.commit();con.close();flash("Compromiso marcado como pagado.","success")
+    return redirect(f"/personal/proximos?anio={anio}&mes={mes}")
+
+
 @app.post("/personal/cuota/<int:cuota_id>/pagar")
 def personal_cuota_pagar(cuota_id):
     g=_pf_guard()
@@ -7612,23 +7936,27 @@ def personal_obligacion_pagar(oid):
     # Cuotas/préstamos: avanza progreso y baja saldo usando el monto REAL registrado.
     if o["tipo"]=="Cuota":
         saldo_nuevo=None
-        if o.get("saldo_deuda") is not None:
+        if o.get("saldo_deuda") is not None and (o.get("saldo_modo") or "Automatico")=="Automatico":
             saldo_nuevo=max(Decimal("0"),Decimal(str(o["saldo_deuda"]))-monto_pagado)
-        cuota_actual=o.get("cuota_actual")
         cuotas_total=o.get("cuotas_total")
+        pagadas_actual=int(o.get("cuotas_pagadas") or 0)
+        pagadas_nuevo=pagadas_actual+1
         finalizada=False
-        nueva_cuota=cuota_actual
-        if cuota_actual is not None and cuotas_total is not None:
-            nueva_cuota=min(int(cuotas_total),int(cuota_actual)+1)
-            finalizada=nueva_cuota>=int(cuotas_total)
+        nueva_cuota=o.get("cuota_actual")
+        if cuotas_total is not None:
+            pagadas_nuevo=min(int(cuotas_total),pagadas_nuevo)
+            finalizada=pagadas_nuevo>=int(cuotas_total)
+            nueva_cuota=min(int(cuotas_total),pagadas_nuevo+1)
+        elif nueva_cuota is not None:
+            nueva_cuota=int(nueva_cuota)+1
         if saldo_nuevo is not None and saldo_nuevo<=0:
             finalizada=True
         cur.execute("""UPDATE pf_obligaciones
-                       SET saldo_deuda=COALESCE(%s,saldo_deuda), cuota_actual=%s,
+                       SET saldo_deuda=COALESCE(%s,saldo_deuda), cuota_actual=%s, cuotas_pagadas=%s,
                            fecha_fin=CASE WHEN %s THEN %s ELSE fecha_fin END,
                            activa=CASE WHEN %s THEN FALSE ELSE activa END
                        WHERE id=%s""",
-                    (saldo_nuevo,nueva_cuota,finalizada,periodo,finalizada,oid))
+                    (saldo_nuevo,nueva_cuota,pagadas_nuevo,finalizada,periodo,finalizada,oid))
 
     con.commit();con.close()
     flash("Retención registrada." if modo_pago=="Retención sueldo" else "Pago registrado y descontado de la cuenta.","success")
