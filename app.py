@@ -143,7 +143,7 @@ def html_layout(titulo, contenido):
           </a>
           <div style="display:flex;gap:7px;align-items:center">
             {f'<a href="/personal" class="mobile-action" style="background:#4f46e5">🔒</a>' if PERSONAL_FINANCE_ENABLED else ''}
-            <button type="button" class="mobile-action mobile-menu-trigger" onclick="toggleMobileMore()">☰ Menú</button>
+            <a href="/crear" class="mobile-action">＋ Orden</a>
           </div>
         </div>
 
