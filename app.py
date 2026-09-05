@@ -141,10 +141,6 @@ def html_layout(titulo, contenido):
           <a href="/" class="mobile-brand">
             <span class="mobile-logo-shell"><img src="{NRTECH_LOGO_DATA_URI}" class="mobile-logo-img" alt="NR Tech"></span>
           </a>
-          <div style="display:flex;gap:7px;align-items:center">
-            {f'<a href="/personal" class="mobile-action" style="background:#4f46e5">🔒</a>' if PERSONAL_FINANCE_ENABLED else ''}
-            <a href="/crear" class="mobile-action">＋ Orden</a>
-          </div>
         </div>
 
         <div id="mobileQuickBackdrop" class="mobile-popover-backdrop" onclick="closeMobilePopovers()"></div>
