@@ -1,4 +1,4 @@
-# NR TECH V14.6 - RECUPERADA DESDE VERSION ESTABLE; SOLO MENU MOVIL
+# NR TECH V14.7 - BASE V14.6 ESTABLE; WHATSAPP EN ACTUALIZACIONES DE ESTADO
 from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
@@ -4568,7 +4568,7 @@ def actualizar():
             """
             SELECT o.numero_orden, o.estado, o.diagnostico_tecnico, o.presupuesto,
                    o.token_aprobacion, o.presupuesto_aprobado, o.presupuesto_rechazado, o.fecha_aprobacion, o.fecha_rechazo,
-                   c.nombre, c.email
+                   c.nombre, c.email, c.telefono
             FROM ordenes o
             JOIN clientes c ON o.cliente_id=c.id
             WHERE o.numero_orden=%s
@@ -4605,7 +4605,7 @@ def actualizar():
             "Actualizar orden",
             card_html(f"""
             <h2 style="margin-top:0;">Actualizar orden {actual['numero_orden']}</h2>
-            <p style="color:#6b7280; margin-top:-6px;">Los cambios se guardan sin email, salvo que marques la opción de envío.</p>
+            <p style="color:#6b7280; margin-top:-6px;">Los cambios se guardan sin avisar al cliente, salvo que marques Email y/o WhatsApp.</p>
 
             <form method="post">
               <input type="hidden" name="numero" value="{actual['numero_orden']}">
@@ -4621,9 +4621,14 @@ def actualizar():
               <label>Presupuesto</label><br>
               <input name="presupuesto" type="number" step="0.01" min="0" value="{pres_val}" style="width:100%; max-width:520px; padding:10px; margin:6px 0 18px; border:1px solid #d1d5db; border-radius:10px;"><br>
 
+              <label style="display:flex; align-items:center; gap:10px; margin:4px 0 10px; max-width:520px; padding:12px 14px; background:#ecfdf5; border:1px solid #86efac; border-radius:12px;">
+                <input type="checkbox" name="enviar_whatsapp" value="1" style="width:18px; height:18px;">
+                <span><strong>📲 Enviar esta actualización por WhatsApp</strong><br><small style="color:#6b7280;">Abrirá WhatsApp con el mensaje listo para enviar al cliente.</small></span>
+              </label>
+
               <label style="display:flex; align-items:center; gap:10px; margin:4px 0 18px; max-width:520px; padding:12px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:12px;">
                 <input type="checkbox" name="enviar_email" value="1" style="width:18px; height:18px;">
-                <span><strong>Enviar esta actualización por email al cliente</strong><br><small style="color:#6b7280;">Si no lo marcás, el cliente no recibe ningún correo.</small></span>
+                <span><strong>✉️ Enviar también por email</strong><br><small style="color:#6b7280;">Opcional. Si el cliente no tiene email, podés usar solo WhatsApp.</small></span>
               </label>
 
               <button type="submit" style="background:#2563eb; color:white; border:none; padding:12px 18px; border-radius:12px; font-weight:bold; cursor:pointer;">Guardar actualización</button>
@@ -4644,12 +4649,13 @@ def actualizar():
     diag = request.form.get("diag", "").strip()
     pres = request.form.get("presupuesto", "").strip()
     enviar = request.form.get("enviar_email") == "1"
+    enviar_whatsapp = request.form.get("enviar_whatsapp") == "1"
 
     con = db()
     cur = con.cursor()
     cur.execute(
         """
-        SELECT o.*, c.nombre, c.email
+        SELECT o.*, c.nombre, c.email, c.telefono
         FROM ordenes o
         JOIN clientes c ON o.cliente_id = c.id
         WHERE o.numero_orden = %s
@@ -4713,7 +4719,7 @@ def actualizar():
 
     cur.execute(
         """
-        SELECT o.numero_orden, c.nombre, c.email, o.tipo_equipo, o.marca, o.modelo,
+        SELECT o.numero_orden, c.nombre, c.email, c.telefono, o.tipo_equipo, o.marca, o.modelo,
                o.estado, o.presupuesto, o.token_aprobacion,
                o.presupuesto_aprobado, o.presupuesto_rechazado
         FROM ordenes o
@@ -4741,6 +4747,51 @@ def actualizar():
             flash("La actualización se guardó, pero el email no pudo enviarse.", "error")
     elif enviar:
         flash("La actualización se guardó, pero el cliente no tiene email.", "error")
+
+    if enviar_whatsapp and info:
+        tel = "".join(ch for ch in str(info.get("telefono") or "") if ch.isdigit())
+        if tel.startswith("0"):
+            tel = "598" + tel[1:]
+        elif tel and not tel.startswith("598"):
+            tel = "598" + tel
+
+        if tel:
+            presupuesto_num = float(info.get("presupuesto") or 0)
+            presupuesto_txt = f"$ {presupuesto_num:,.2f}" if presupuesto_num > 0 else "Sin importe informado"
+            equipo_txt = " ".join(
+                str(x or "").strip()
+                for x in (info.get("tipo_equipo"), info.get("marca"), info.get("modelo"))
+                if str(x or "").strip()
+            )
+
+            mensaje = (
+                f"Hola {info.get('nombre') or ''}, te enviamos una actualización de tu reparación en NR Tech.\n\n"
+                f"Orden: {info.get('numero_orden')}\n"
+                f"Equipo: {equipo_txt}\n"
+                f"Estado: {info.get('estado')}\n"
+                f"Presupuesto: {presupuesto_txt}"
+            )
+
+            if (
+                info.get("estado") == "Esperando aprobación"
+                and presupuesto_num > 0
+                and info.get("token_aprobacion")
+                and not info.get("presupuesto_aprobado")
+                and not info.get("presupuesto_rechazado")
+            ):
+                base = BASE_URL or request.url_root.rstrip("/")
+                token = info["token_aprobacion"]
+                mensaje += (
+                    "\n\nPodés responder el presupuesto desde estos enlaces:\n"
+                    f"✅ Aceptar: {base}/aceptar_presupuesto/{token}\n"
+                    f"❌ Rechazar: {base}/rechazar_presupuesto/{token}"
+                )
+
+            mensaje += "\n\nNR Tech - Tecnología en buenas manos"
+            destino_wa = f"https://wa.me/{tel}?text={quote(mensaje)}"
+            return redirect(destino_wa)
+
+        flash("La actualización se guardó, pero el cliente no tiene WhatsApp/teléfono cargado.", "error")
 
     return redirect("/ver_ordenes")
 
