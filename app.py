@@ -1,3 +1,4 @@
+# NR TECH V14.4 - FIX MENU PC - 2026-09-05
 from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
@@ -206,6 +207,13 @@ def html_layout(titulo, contenido):
         <meta name="theme-color" content="#111827">
         <title>{escape(str(titulo))} · NR Tech</title>
         <style>
+          .mobile-top,
+          .mobile-menu,
+          .mobile-popover,
+          .mobile-popover-backdrop{
+            display:none;
+          }
+
           :root {{
             --bg:#eaf1f8;
             --tech-cyan:#22d3ee;
@@ -384,7 +392,10 @@ def html_layout(titulo, contenido):
           }}
           .login-logo-img{{display:block;width:100%;height:auto;max-height:115px;object-fit:contain}}
           .login-brand p{{margin:0;color:var(--muted);font-size:13px;font-weight:600}}
-          @media(max-width:900px){{
+          @media(max-width:768px){{
+            .mobile-top{display:flex;}
+            .mobile-menu{display:flex;}
+
             .sidebar{{display:none}}
             .main-area{{margin-left:0}}
             .topbar{{display:none}}
