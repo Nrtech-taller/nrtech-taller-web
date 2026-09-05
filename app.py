@@ -1,4 +1,4 @@
-# NR TECH V14.7 - BASE V14.6 ESTABLE; WHATSAPP EN ACTUALIZACIONES DE ESTADO
+# NR TECH V14.8 - BASE V14.7; WHATSAPP EN NUEVA ORDEN
 from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
@@ -4172,7 +4172,24 @@ def crear():
                 </div><div id="patronTexto" style="font-size:13px;color:#6b7280;margin:8px 0;">Patrón: -</div><button type="button" onclick="limpiarPatron()" style="border:0;padding:8px 11px;border-radius:8px;">Limpiar</button></div></div>
               </details>
 
-              <details style="margin-top:14px;padding:14px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;"><summary style="cursor:pointer;font-weight:700;">📅 Entrega y comunicación</summary><div style="padding-top:10px;"><label>Fecha estimada</label><br><input type="date" name="fecha_entrega" style="padding:10px;margin:6px 0;border:1px solid #d1d5db;border-radius:10px;"><label style="display:flex;gap:8px;align-items:center;margin-top:10px;"><input type="checkbox" name="enviar_email_ingreso" value="1"> Enviar confirmación de ingreso por email</label></div></details>
+              <details style="margin-top:14px;padding:14px;background:#f8fafc;border:1px solid #e5e7eb;border-radius:14px;">
+                <summary style="cursor:pointer;font-weight:700;">📅 Entrega y comunicación</summary>
+                <div style="padding-top:10px;">
+                  <label>Fecha estimada</label><br>
+                  <input type="date" name="fecha_entrega" style="padding:10px;margin:6px 0 12px;border:1px solid #d1d5db;border-radius:10px;">
+
+                  <div style="display:grid;gap:10px;max-width:620px;">
+                    <label style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;background:#ecfdf5;border:1px solid #86efac;border-radius:12px;">
+                      <input type="checkbox" name="enviar_whatsapp_ingreso" value="1" style="width:18px;height:18px;margin-top:2px;">
+                      <span><strong>📲 Enviar confirmación por WhatsApp</strong><br><small style="color:#6b7280;">Al guardar la orden se abrirá WhatsApp con el mensaje listo para enviar.</small></span>
+                    </label>
+                    <label style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;">
+                      <input type="checkbox" name="enviar_email_ingreso" value="1" style="width:18px;height:18px;margin-top:2px;">
+                      <span><strong>✉️ Enviar confirmación por email</strong><br><small style="color:#6b7280;">Podés marcar ambos si el cliente tiene teléfono y correo.</small></span>
+                    </label>
+                  </div>
+                </div>
+              </details>
 
               <div style="margin-top:18px;"><button type="submit" style="background:#2563eb;color:white;border:0;padding:13px 20px;border-radius:12px;font-weight:800;">Guardar orden</button><a href="/" style="margin-left:12px;color:#2563eb;font-weight:700;text-decoration:none;">Cancelar</a></div>
             </form>
@@ -4208,6 +4225,7 @@ def crear():
     clave_bloqueo = request.form.get("clave_bloqueo", "").strip()
     patron_bloqueo = request.form.get("patron_bloqueo", "").strip()
     enviar_ingreso = request.form.get("enviar_email_ingreso") == "1"
+    enviar_whatsapp_ingreso = request.form.get("enviar_whatsapp_ingreso") == "1"
 
     con = db()
     cur = con.cursor()
@@ -4279,6 +4297,49 @@ def crear():
             flash("La orden se creó, pero el email no pudo enviarse.", "error")
     elif enviar_ingreso and not email:
         flash("La orden se creó, pero no se envió email porque el cliente no tiene correo.", "error")
+
+    if enviar_whatsapp_ingreso:
+        tel = "".join(ch for ch in str(telefono or "") if ch.isdigit())
+        if tel.startswith("0"):
+            tel = "598" + tel[1:]
+        elif tel and not tel.startswith("598"):
+            tel = "598" + tel
+
+        if tel:
+            equipo_txt = " ".join(x for x in [tipo, marca, modelo] if x).strip() or "Equipo ingresado"
+            partes = [
+                "🔧 *NR Tech – Confirmación de ingreso*",
+                "",
+                f"Hola {nombre}, recibimos tu equipo correctamente.",
+                "",
+                f"🧾 *Orden:* {numero_orden}",
+                f"📱 *Equipo:* {equipo_txt}",
+                "📍 *Estado:* Recibido en taller",
+            ]
+            if falla_cliente:
+                partes.append(f"🔎 *Falla declarada:* {falla_cliente}")
+            if accesorios:
+                partes.append(f"📦 *Accesorios:* {accesorios}")
+            if fecha_entrega:
+                try:
+                    fecha_txt = datetime.datetime.strptime(fecha_entrega, "%Y-%m-%d").strftime("%d/%m/%Y")
+                except Exception:
+                    fecha_txt = fecha_entrega
+                partes.append(f"📅 *Fecha estimada:* {fecha_txt}")
+
+            partes += [
+                "",
+                "Te iremos informando por este medio sobre el avance de la reparación.",
+                "",
+                "*NR Tech*",
+                "Tecnología en buenas manos"
+            ]
+
+            mensaje_wa = "\n".join(partes)
+            destino_wa = f"https://wa.me/{tel}?text={quote(mensaje_wa)}"
+            return redirect(destino_wa)
+
+        flash("La orden se creó, pero no se pudo abrir WhatsApp porque el cliente no tiene teléfono cargado.", "error")
 
     return redirect(f"/editar?numero={numero_orden}")
 
