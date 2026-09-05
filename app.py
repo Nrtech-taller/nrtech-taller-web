@@ -1,4 +1,4 @@
-# NR TECH V14.4 - FIX MENU PC - 2026-09-05
+# NR TECH V14.5 - FIX ERROR 500 + MENU PC - 2026-09-05
 from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
@@ -210,9 +210,9 @@ def html_layout(titulo, contenido):
           .mobile-top,
           .mobile-menu,
           .mobile-popover,
-          .mobile-popover-backdrop{
+          .mobile-popover-backdrop{{
             display:none;
-          }
+          }}
 
           :root {{
             --bg:#eaf1f8;
