@@ -1,4 +1,4 @@
-# NR TECH V14.5 - FIX ERROR 500 + MENU PC - 2026-09-05
+# NR TECH V14.6 - RECUPERADA DESDE VERSION ESTABLE; SOLO MENU MOVIL
 from flask import Flask, request, redirect, session, flash, get_flashed_messages
 import os
 import psycopg
@@ -142,39 +142,17 @@ def html_layout(titulo, contenido):
           <a href="/" class="mobile-brand">
             <span class="mobile-logo-shell"><img src="{NRTECH_LOGO_DATA_URI}" class="mobile-logo-img" alt="NR Tech"></span>
           </a>
+          <div style="display:flex;gap:7px;align-items:center">
+            {f'<a href="/personal" class="mobile-action" style="background:#4f46e5">🔒</a>' if PERSONAL_FINANCE_ENABLED else ''}
+            <a href="/crear" class="mobile-action">＋ Orden</a>
+          </div>
         </div>
-
-        <div id="mobileQuickBackdrop" class="mobile-popover-backdrop" onclick="closeMobilePopovers()"></div>
-
-        <div id="mobileQuickMenu" class="mobile-popover mobile-quick-popover">
-          <div class="mobile-popover-title">Crear / ingresar</div>
-          <a href="/crear"><span>＋</span><b>Nueva orden</b></a>
-          <a href="/venta"><span>🛒</span><b>Nueva venta</b></a>
-          <a href="/solicitudes_ingreso"><span>↗</span><b>Autogestión</b></a>
-        </div>
-
-        <div id="mobileMoreMenu" class="mobile-popover mobile-more-popover">
-          <div class="mobile-popover-title">Más opciones</div>
-          <a href="/solicitudes_ingreso"><span>↗</span><b>Autogestión</b></a>
-          <a href="/stock"><span>▣</span><b>Stock</b></a>
-          <a href="/finanzas"><span>◒</span><b>Finanzas</b></a>
-          <a href="/facturacion"><span>▧</span><b>Facturación</b></a>
-          <a href="/garantias"><span>◈</span><b>Garantías</b></a>
-          <a href="/clientes"><span>👤</span><b>Clientes</b></a>
-          <a href="/buscar"><span>⌕</span><b>Buscar equipo</b></a>
-          <a href="/difusion"><span>◉</span><b>Difusión</b></a>
-        </div>
-
         <div class="mobile-menu">
           {nav_item("/", "⌂", "Inicio", ["/"])}
           {nav_item("/ver_ordenes", "▤", "Órdenes", ["/ver_ordenes","/editar","/actualizar","/entrega"])}
-          <button type="button" class="nav-item mobile-center-new" onclick="toggleMobileQuick()">
-            <span class="nav-icon">＋</span><span>Nueva</span>
-          </button>
+          {nav_item("/crear", "＋", "Nueva", ["/crear"])}
           {nav_item("/ventas", "◫", "Ventas", ["/ventas","/venta_comprobante","/venta"])}
-          <button type="button" class="nav-item" onclick="toggleMobileMore()">
-            <span class="nav-icon">⋯</span><span>Más</span>
-          </button>
+          {nav_item("/solicitudes_ingreso", "↗", "Autogestión", ["/solicitudes_ingreso"])}
         </div>
         """
 
@@ -207,13 +185,6 @@ def html_layout(titulo, contenido):
         <meta name="theme-color" content="#111827">
         <title>{escape(str(titulo))} · NR Tech</title>
         <style>
-          .mobile-top,
-          .mobile-menu,
-          .mobile-popover,
-          .mobile-popover-backdrop{{
-            display:none;
-          }}
-
           :root {{
             --bg:#eaf1f8;
             --tech-cyan:#22d3ee;
@@ -392,10 +363,7 @@ def html_layout(titulo, contenido):
           }}
           .login-logo-img{{display:block;width:100%;height:auto;max-height:115px;object-fit:contain}}
           .login-brand p{{margin:0;color:var(--muted);font-size:13px;font-weight:600}}
-          @media(max-width:768px){{
-            .mobile-top{display:flex;}
-            .mobile-menu{display:flex;}
-
+          @media(max-width:900px){{
             .sidebar{{display:none}}
             .main-area{{margin-left:0}}
             .topbar{{display:none}}
@@ -429,57 +397,13 @@ def html_layout(titulo, contenido):
             }}
             .mobile-menu .nav-item.active:after{{display:none}}
             .mobile-menu .nav-icon{{width:auto;font-size:18px}}
-            .mobile-menu button.nav-item{{
-              border:0;font-family:inherit;cursor:pointer;width:100%;
-            }}
-            .mobile-center-new .nav-icon{{
-              display:flex;align-items:center;justify-content:center;
-              width:34px!important;height:34px;border-radius:12px;
-              background:linear-gradient(145deg,#06b6d4,#2563eb);
-              color:white;font-size:24px!important;line-height:1;
-              box-shadow:0 7px 16px rgba(37,99,235,.30);
-            }}
-            .mobile-popover-backdrop{{
-              display:none;position:fixed;inset:0;z-index:54;
-              background:rgba(15,23,42,.30);backdrop-filter:blur(2px);
-            }}
-            .mobile-popover-backdrop.show{{display:block}}
-            .mobile-popover{{
-              display:none;position:fixed;z-index:58;left:14px;right:14px;
-              bottom:92px;background:white;border:1px solid #dbe4ef;
-              border-radius:18px;padding:10px;
-              box-shadow:0 22px 55px rgba(15,23,42,.28);
-            }}
-            .mobile-popover.show{{display:block}}
-            .mobile-popover-title{{
-              padding:5px 8px 9px;color:#64748b;font-size:11px;
-              font-weight:900;letter-spacing:.08em;text-transform:uppercase;
-            }}
-            .mobile-popover a{{
-              display:flex;align-items:center;gap:11px;padding:12px 11px;
-              border-radius:12px;text-decoration:none;color:#0f172a;
-              border:1px solid transparent;
-            }}
-            .mobile-popover a:hover{{background:#f8fafc;border-color:#e2e8f0}}
-            .mobile-popover a span{{
-              width:31px;height:31px;border-radius:10px;display:flex;
-              align-items:center;justify-content:center;background:#eff6ff;
-              color:#2563eb;font-size:17px;flex:0 0 31px;
-            }}
-            .mobile-popover a b{{font-size:14px}}
-            .mobile-more-popover{{
-              max-height:min(68vh,520px);overflow:auto;
-            }}
-            .mobile-menu-trigger{{
-              border:0;cursor:pointer;font-family:inherit;
-            }}
-            .content-wrap{{padding:16px 12px 112px}}
+            .content-wrap{{padding:16px 12px 98px}}
             .card{{padding:15px;border-radius:14px}}
             table{{font-size:12.5px}}
             th,td{{padding:9px 8px!important}}
           }}
           @media(max-width:560px){{
-            .content-wrap{{padding:12px 9px 112px}}
+            .content-wrap{{padding:12px 9px 28px}}
             .card{{padding:12px}}
             input,select,textarea{{max-width:100%}}
           }}
@@ -496,39 +420,6 @@ def html_layout(titulo, contenido):
               {avisos_html}
               {contenido}
             </div>
-            <script>
-              function closeMobilePopovers(){{
-                const q=document.getElementById('mobileQuickMenu');
-                const m=document.getElementById('mobileMoreMenu');
-                const b=document.getElementById('mobileQuickBackdrop');
-                if(q) q.classList.remove('show');
-                if(m) m.classList.remove('show');
-                if(b) b.classList.remove('show');
-              }}
-              function toggleMobileQuick(){{
-                const q=document.getElementById('mobileQuickMenu');
-                const m=document.getElementById('mobileMoreMenu');
-                const b=document.getElementById('mobileQuickBackdrop');
-                if(!q || !b) return;
-                const abrir=!q.classList.contains('show');
-                if(m) m.classList.remove('show');
-                q.classList.toggle('show',abrir);
-                b.classList.toggle('show',abrir);
-              }}
-              function toggleMobileMore(){{
-                const q=document.getElementById('mobileQuickMenu');
-                const m=document.getElementById('mobileMoreMenu');
-                const b=document.getElementById('mobileQuickBackdrop');
-                if(!m || !b) return;
-                const abrir=!m.classList.contains('show');
-                if(q) q.classList.remove('show');
-                m.classList.toggle('show',abrir);
-                b.classList.toggle('show',abrir);
-              }}
-              document.addEventListener('keydown',function(e){{
-                if(e.key==='Escape') closeMobilePopovers();
-              }});
-            </script>
           </main>
         </div>
       </body>
